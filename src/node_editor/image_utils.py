@@ -45,13 +45,14 @@ def resize_for_preview(img: np.ndarray, max_size: int) -> np.ndarray:
     return cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
 
 
-def cv_image_to_base64(img: np.ndarray, max_size: int = 0) -> Optional[str]:
+def cv_image_to_base64(img: np.ndarray, max_size: int = 0, quality: int = 95) -> Optional[str]:
     """
     OpenCV画像をBase64文字列に変換
 
     Args:
         img: OpenCV画像
         max_size: 最大サイズ（0の場合はリサイズなし）
+        quality: JPEG品質（1-100、デフォルト95）
 
     Returns:
         Base64文字列
@@ -64,7 +65,8 @@ def cv_image_to_base64(img: np.ndarray, max_size: int = 0) -> Optional[str]:
         if max_size > 0:
             img = resize_for_preview(img, max_size)
 
-        _, buffer = cv2.imencode('.jpg', img)
+        # JPEG品質を明示的に指定
+        _, buffer = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, quality])
         b64_string = base64.b64encode(buffer).decode('utf-8')
         return b64_string
     except Exception:
@@ -90,16 +92,17 @@ def ensure_cv_image(value: Any) -> Optional[np.ndarray]:
     return None
 
 
-def ensure_base64(value: Any, max_size: int = 0) -> Optional[str]:
+def ensure_base64(value: Any, max_size: int = 0, quality: int = 95) -> Optional[str]:
     """
     値をBase64文字列に変換。
-    - Base64文字列の場合はそのまま返す
+    - Base64文字列の場合、max_sizeまたはqualityが指定されていれば再エンコード
     - numpy配列の場合は変換して返す
     - それ以外はNoneを返す
 
     Args:
         value: 変換対象の値
         max_size: 最大サイズ（0の場合はリサイズなし、プレビュー用）
+        quality: JPEG品質（1-100、デフォルト95）
 
     Returns:
         Base64文字列
@@ -108,9 +111,14 @@ def ensure_base64(value: Any, max_size: int = 0) -> Optional[str]:
         return None
 
     if isinstance(value, str):
+        # max_sizeまたはqualityが指定されている場合は、デコードして再エンコード
+        if max_size > 0 or quality != 95:
+            img = base64_to_cv_image(value)
+            if img is not None:
+                return cv_image_to_base64(img, max_size, quality)
         return value
 
     if is_cv_image(value):
-        return cv_image_to_base64(value, max_size)
+        return cv_image_to_base64(value, max_size, quality)
 
     return None

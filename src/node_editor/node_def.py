@@ -120,6 +120,7 @@ class NodeDefinition(BaseModel):
     measure_time: bool = True  # 処理時間計測の対象か否か
     run_when_stopped: bool = False  # STOP時も実行可能か（デフォルトはSTART時のみ）
     resizable: bool = False  # ノードのリサイズを許可するか（デフォルトはオフ）
+    preview_size: int = 960  # プレビュー画像の最大サイズ（デフォルト960）
     node_disable: bool = False  # 無効化フラグ（trueでサイドバーに非表示）
     no_duplicate: bool = False  # 複製不可フラグ（trueで右クリックメニューから複製不可）
     dynamic_ports: Optional[str] = None  # 動的ポートのプレフィックス（例: "Image"で"Image 1", "Image 2"...）
@@ -571,6 +572,7 @@ def discover_nodes(
             measure_time = node_config.get("measure_time", True)  # 処理時間計測対象（デフォルトtrue）
             run_when_stopped = node_config.get("run_when_stopped", False)  # STOP時も実行可（デフォルトfalse）
             resizable = node_config.get("resizable", False)  # リサイズ許可（デフォルトfalse）
+            preview_size = node_config.get("preview_size", 960)  # プレビュー画像の最大サイズ（デフォルト960）
             node_disable = node_config.get("node_disable", False)  # 無効化（デフォルトfalse）
             no_duplicate = node_config.get("no_duplicate", False)  # 複製不可（デフォルトfalse）
             dynamic_ports = node_config.get("dynamic_ports", None)  # 動的ポートのプレフィックス
@@ -584,6 +586,7 @@ def discover_nodes(
                 measure_time=measure_time,
                 run_when_stopped=run_when_stopped,
                 resizable=resizable,
+                preview_size=preview_size,
                 node_disable=node_disable,
                 no_duplicate=no_duplicate,
                 dynamic_ports=dynamic_ports,

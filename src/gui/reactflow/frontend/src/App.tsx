@@ -1662,9 +1662,15 @@ function AppContent() {
 
               // resizable=trueのノードはスタイルを設定
               const isResizable = def.resizable === true;
-              const nodeStyle = isResizable && !node.style
-                ? { width: 228 }
-                : node.style;
+              let nodeStyle = node.style;
+              if (isResizable && !nodeStyle) {
+                // image.output.displayノードは大きな初期サイズを設定
+                if (defId === 'image.output.display') {
+                  nodeStyle = { width: 960, height: 600 };
+                } else {
+                  nodeStyle = { width: 228 };
+                }
+              }
 
               // 複製不可フラグ
               const noDuplicate = def.no_duplicate === true;

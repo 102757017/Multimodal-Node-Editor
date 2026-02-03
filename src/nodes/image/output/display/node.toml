@@ -6,6 +6,7 @@ order = 10
 gui = ["reactflow", "headless"]
 run_when_stopped = true  # STOP時も実行可能
 resizable = true  # ノードのリサイズを許可
+preview_size = 640  # プレビュー画像の最大サイズ（拡大表示用）
 
 [[ports]]
 name = "image"

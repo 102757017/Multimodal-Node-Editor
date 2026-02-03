@@ -305,7 +305,10 @@ class Graph(BaseModel):
                 if port.id in port_values:
                     value = port_values[port.id]
                     if port.data_type == "image" and encode_base64:
-                        value = ensure_base64(value, max_size=640)
+                        # ノード定義にpreview_sizeがあればそれを使用、なければデフォルト960
+                        preview_size = getattr(definition, 'preview_size', 960)
+                        # 高品質JPEG（98）を使用
+                        value = ensure_base64(value, max_size=preview_size, quality=98)
                     output_key = f"{node.id}.{port.name}"
                     all_outputs[output_key] = value
 
@@ -327,7 +330,10 @@ class Graph(BaseModel):
                         value = port_values.get(conn.from_port_id)
                         if value is not None:
                             if in_port.data_type == "image" and encode_base64:
-                                value = ensure_base64(value, max_size=640)
+                                # ノード定義にpreview_sizeがあればそれを使用、なければデフォルト960
+                                preview_size = getattr(definition, 'preview_size', 960)
+                                # 高品質JPEG（98）を使用
+                                value = ensure_base64(value, max_size=preview_size, quality=98)
                             all_outputs[output_key] = value
                         break
 
