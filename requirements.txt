@@ -4,6 +4,7 @@ fastapi
 python-multipart
 uvicorn[standard]
 opencv-python
+pillow
 motpy
 sahi
 onnx

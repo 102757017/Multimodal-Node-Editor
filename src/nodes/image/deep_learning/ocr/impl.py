@@ -10,6 +10,7 @@ import math
 
 import numpy as np
 import cv2
+from PIL import Image, ImageDraw, ImageFont
 
 # GPU利用可能かチェック
 try:
@@ -552,47 +553,70 @@ def draw_ocr_results(
     image: np.ndarray,
     results: List[Dict[str, Any]]
 ) -> np.ndarray:
-    """OCR結果を画像に描画（検出ボックス、ID、スコア）"""
+    """OCR結果を画像に描画（検出ボックス、テキスト、ID、スコア）"""
     result_image = image.copy()
+
+    # OpenCVでボックスを描画
+    for idx, result in enumerate(results):
+        box = np.array(result["box"], dtype=np.int32)
+        # ボックス描画（緑色）
+        cv2.polylines(result_image, [box], True, (0, 255, 0), 2)
+
+    # Pillowでテキストとラベルを描画（日本語対応）
+    pil_image = Image.fromarray(cv2.cvtColor(result_image, cv2.COLOR_BGR2RGB))
+    draw = ImageDraw.Draw(pil_image)
+
+    # フォント設定（日本語対応）
+    try:
+        # Windows
+        font_text = ImageFont.truetype("msgothic.ttc", 24)
+        font_label = ImageFont.truetype("msgothic.ttc", 18)
+    except:
+        try:
+            # Linux/Mac
+            font_text = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 24)
+            font_label = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 18)
+        except:
+            # フォールバック
+            font_text = ImageFont.load_default()
+            font_label = ImageFont.load_default()
 
     for idx, result in enumerate(results):
         box = np.array(result["box"], dtype=np.int32)
+        text = result["text"]
         conf = result["confidence"]
         detection_id = idx + 1
 
-        # ボックス描画
-        cv2.polylines(result_image, [box], True, (0, 255, 0), 2)
+        # ボックスの上辺中央座標を取得
+        top_center_x = int((box[0][0] + box[1][0]) / 2)
+        top_y = int(min(box[0][1], box[1][1]))
 
-        # ラベル作成（ID: スコア）
+        # テキストをボックスの上に描画
+        bbox = draw.textbbox((0, 0), text, font=font_text)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+        text_x = top_center_x - text_w // 2
+        text_y = max(top_y - text_h - 5, 5)
+
+        # テキスト描画（緑色）
+        draw.text((text_x, text_y), text, font=font_text, fill=(0, 255, 0))
+
+        # ボックスの下にID + スコアを描画
         label = f"#{detection_id} {conf:.2f}"
+        bottom_center_x = int((box[2][0] + box[3][0]) / 2)
+        bottom_y = int(max(box[2][1], box[3][1]))
 
-        # ラベル位置
-        x, y = box[0]
-        label_y = max(y - 8, 20)
+        bbox = draw.textbbox((0, 0), label, font=font_label)
+        label_w = bbox[2] - bbox[0]
+        label_h = bbox[3] - bbox[1]
+        label_x = bottom_center_x - label_w // 2
+        label_y = bottom_y + 5
 
-        # ラベル背景
-        (label_w, label_h), baseline = cv2.getTextSize(
-            label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2
-        )
-        cv2.rectangle(
-            result_image,
-            (x, label_y - label_h - baseline),
-            (x + label_w, label_y + baseline),
-            (0, 255, 0),
-            -1
-        )
+        # ラベルテキスト描画（緑色）
+        draw.text((label_x, label_y), label, font=font_label, fill=(0, 255, 0))
 
-        # ラベルテキスト
-        cv2.putText(
-            result_image,
-            label,
-            (x, label_y),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (0, 0, 0),
-            2,
-            cv2.LINE_AA
-        )
+    # PIL Image -> OpenCV Image
+    result_image = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
 
     return result_image
 
