@@ -1666,7 +1666,7 @@ function AppContent() {
               if (isResizable && !nodeStyle) {
                 // image.output.displayノードは大きな初期サイズを設定
                 if (defId === 'image.output.display') {
-                  nodeStyle = { width: 960, height: 600 };
+                  nodeStyle = { width: 1920, height: 1200 };
                 } else {
                   nodeStyle = { width: 228 };
                 }
