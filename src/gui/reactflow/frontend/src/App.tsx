@@ -488,6 +488,114 @@ function AppContent() {
     }
   }, [theme]);
 
+  // URLパラメータからグラフファイルを自動ロード
+  useEffect(() => {
+    // ローディング完了とノード定義取得完了を待つ
+    if (isLoading || definitions.length === 0) return;
+
+    // URLパラメータを取得
+    const urlParams = new URLSearchParams(window.location.search);
+    const graphParam = urlParams.get('graph');
+
+    if (!graphParam) return;
+
+    // グラフファイルを読み込む
+    const loadGraphFromUrl = async () => {
+      try {
+        const response = await fetch(`/graphs/${graphParam}`);
+        if (!response.ok) {
+          console.error(`Failed to load graph: ${response.statusText}`);
+          return;
+        }
+
+        const graphData = await response.json();
+
+        if (graphData.nodes && Array.isArray(graphData.nodes)) {
+          // ノード定義に基づいてポート情報をマイグレーション（handleLoadと同じロジック）
+          const migratedNodes = graphData.nodes.map((node: Node<{ data: CustomNodeData }>) => {
+            const defId = node.data?.data?.definitionId;
+            const def = definitions.find((d) => d.definition_id === defId);
+            if (!def) return node;
+
+            // 現在のノード定義からポート情報を取得
+            const portMap = new Map<string, GraphPort>();
+            for (const p of def.inputs) {
+              if (!portMap.has(p.name)) {
+                const existingPort = node.data.data.inputs?.find((i: GraphPort) => i.name === p.name);
+                portMap.set(p.name, {
+                  id: existingPort?.id || generateId('port'),
+                  name: p.name,
+                  data_type: p.data_type,
+                  direction: p.direction,
+                  preview: p.preview ?? true,
+                });
+              }
+            }
+            for (const p of def.outputs) {
+              if (!portMap.has(p.name)) {
+                const existingPort = node.data.data.outputs?.find((o: GraphPort) => o.name === p.name);
+                portMap.set(p.name, {
+                  id: existingPort?.id || generateId('port'),
+                  name: p.name,
+                  data_type: p.data_type,
+                  direction: p.direction,
+                  preview: p.preview ?? true,
+                });
+              }
+            }
+
+            const inputs: GraphPort[] = def.inputs.map(p => portMap.get(p.name)!);
+            const outputs: GraphPort[] = def.outputs.map(p => portMap.get(p.name)!);
+
+            const shouldClearImage = defId === 'image.input.webcam';
+
+            const isResizable = def.resizable === true;
+            let nodeStyle = node.style;
+            if (isResizable && !nodeStyle) {
+              if (defId === 'image.output.display') {
+                nodeStyle = { width: 1920, height: 1200 };
+              } else {
+                nodeStyle = { width: 228 };
+              }
+            }
+
+            const noDuplicate = def.no_duplicate === true;
+            const dynamicPorts = def.dynamic_ports || undefined;
+
+            return {
+              ...node,
+              type: 'custom',
+              style: nodeStyle,
+              data: {
+                ...node.data,
+                data: {
+                  ...node.data.data,
+                  resizable: isResizable,
+                  noDuplicate,
+                  dynamicPorts,
+                  inputs,
+                  outputs,
+                  propertyDefs: def.properties || node.data.data.propertyDefs,
+                  apiKeysStatus: apiKeysStatusRef.current,
+                  ...(shouldClearImage ? { imageData: undefined } : {}),
+                },
+              },
+            };
+          });
+          setNodes(migratedNodes);
+        }
+        if (graphData.edges && Array.isArray(graphData.edges)) {
+          setEdges(graphData.edges);
+        }
+        console.log(`Loaded graph from URL parameter: ${graphParam}`);
+      } catch (err) {
+        console.error('Failed to load graph from URL:', err);
+      }
+    };
+
+    loadGraphFromUrl();
+  }, [isLoading, definitions, setNodes, setEdges]);
+
   // WebSocket接続管理（runtime判定後に接続）
   useEffect(() => {
     // ロード中はWebSocket接続しない
