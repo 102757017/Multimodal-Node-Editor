@@ -1,0 +1,25 @@
+name = "dora.output"
+version = "1.0.0"
+display_name = "Dora Output"
+description = "Send data to other dora-rs nodes."
+order = 20
+gui =["reactflow", "headless"]
+
+# 接收图像的端口
+[[ports]]
+name = "image"
+data_type = "image"
+direction = "in"
+
+# 接收文本的端口
+[[ports]]
+name = "text"
+data_type = "string"
+direction = "in"
+
+[[properties]]
+name = "output_id"
+display_name = "Output ID"
+type = "string"
+default = "result"
+widget = "text_input"

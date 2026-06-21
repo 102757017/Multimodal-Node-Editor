@@ -1,0 +1,27 @@
+name = "dora.input"
+version = "1.0.0"
+display_name = "Dora Input"
+description = "Receive data from other dora-rs nodes."
+order = 10
+gui =["reactflow", "headless"]
+# 设置为 true，让它在暂停状态下也能获取最新数据（如果需要的话）
+run_when_stopped = false 
+
+[[ports]]
+name = "image"
+display_name = "Image"
+data_type = "image"
+direction = "out"
+
+[[ports]]
+name = "text"
+display_name = "Info"   # 在 UI 上显示为 Info
+data_type = "string"
+direction = "out"
+
+[[properties]]
+name = "input_id"
+display_name = "Input ID"
+type = "string"
+default = "tick"
+widget = "text_input"
