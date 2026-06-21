@@ -1,0 +1,140 @@
+name = "logic.condition_gate"
+version = "1.0.0"
+display_name = "Condition Gate"
+description = "Filters data flow: outputs data inputs only when conditions are met. Each condition has a configurable comparison operator (==, >, <, etc.) and threshold. Use to route data to different branches based on conditions."
+order = 10
+gui = ["reactflow", "headless"]
+run_when_stopped = true
+
+# Static condition inputs (any) — evaluated against cond{i}_op / cond{i}_val.
+# Unconnected conditions are ignored (don't block the gate).
+[[ports]]
+name = "Condition 1"
+data_type = "any"
+direction = "in"
+preview = false
+
+[[ports]]
+name = "Condition 2"
+data_type = "any"
+direction = "in"
+preview = false
+
+[[ports]]
+name = "Condition 3"
+data_type = "any"
+direction = "in"
+preview = false
+
+# `passed` output: true when the gate is open this frame
+[[ports]]
+name = "passed"
+data_type = "bool"
+direction = "out"
+preview = false
+
+# --- gate mode ---
+[[properties]]
+name = "mode"
+display_name = "Condition Mode"
+type = "string"
+default = "AND"
+widget = "dropdown"
+options = [
+    { value = "AND", label = "AND — all conditions must pass" },
+    { value = "OR", label = "OR — any condition passes" },
+]
+
+[[properties]]
+name = "invert"
+display_name = "Invert (NOT)"
+type = "bool"
+default = false
+widget = "checkbox"
+
+# --- Condition 1 comparison ---
+[[properties]]
+name = "cond1_op"
+display_name = "Cond 1 Op"
+type = "string"
+default = "truthy"
+widget = "dropdown"
+options = [
+    { value = "truthy", label = "truthy (any non-zero/non-empty)" },
+    { value = "==", label = "== (equal)" },
+    { value = "!=", label = "!= (not equal)" },
+    { value = ">", label = "> (greater than)" },
+    { value = ">=", label = ">= (greater or equal)" },
+    { value = "<", label = "< (less than)" },
+    { value = "<=", label = "<= (less or equal)" },
+    { value = "contains", label = "contains (substring)" },
+]
+
+[[properties]]
+name = "cond1_val"
+display_name = "Cond 1 Value"
+type = "string"
+default = ""
+widget = "input"
+
+# --- Condition 2 comparison ---
+[[properties]]
+name = "cond2_op"
+display_name = "Cond 2 Op"
+type = "string"
+default = "truthy"
+widget = "dropdown"
+options = [
+    { value = "truthy", label = "truthy (any non-zero/non-empty)" },
+    { value = "==", label = "== (equal)" },
+    { value = "!=", label = "!= (not equal)" },
+    { value = ">", label = "> (greater than)" },
+    { value = ">=", label = ">= (greater or equal)" },
+    { value = "<", label = "< (less than)" },
+    { value = "<=", label = "<= (less or equal)" },
+    { value = "contains", label = "contains (substring)" },
+]
+
+[[properties]]
+name = "cond2_val"
+display_name = "Cond 2 Value"
+type = "string"
+default = ""
+widget = "input"
+
+# --- Condition 3 comparison ---
+[[properties]]
+name = "cond3_op"
+display_name = "Cond 3 Op"
+type = "string"
+default = "truthy"
+widget = "dropdown"
+options = [
+    { value = "truthy", label = "truthy (any non-zero/non-empty)" },
+    { value = "==", label = "== (equal)" },
+    { value = "!=", label = "!= (not equal)" },
+    { value = ">", label = "> (greater than)" },
+    { value = ">=", label = ">= (greater or equal)" },
+    { value = "<", label = "< (less than)" },
+    { value = "<=", label = "<= (less or equal)" },
+    { value = "contains", label = "contains (substring)" },
+]
+
+[[properties]]
+name = "cond3_val"
+display_name = "Cond 3 Value"
+type = "string"
+default = ""
+widget = "input"
+
+# Dynamic data inputs (any) — seeded from min_count=1 (Data 1).
+# Each data input is echoed to an auto-created same-named output.
+[dynamic_ports.inputs]
+group_name = "data_inputs"
+prefix = "Data"
+data_type = "any"
+direction = "in"
+min_count = 1
+max_count = 8
+auto_expand = true
+preview = false

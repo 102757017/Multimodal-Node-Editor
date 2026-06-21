@@ -31,14 +31,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-# Make the mini-service importable when run from anywhere.
-# When this script lives in the project root, the backend is in
-# mini-services/node-editor-server/; when it lives in the backend dir itself,
-# SERVER_DIR is already correct.
+# Make the mini-service importable when run from anywhere
 SERVER_DIR = Path(__file__).resolve().parent
-if not (SERVER_DIR / "main.py").exists():
-    # we're in the project root — point at the backend
-    SERVER_DIR = SERVER_DIR / "mini-services" / "node-editor-server"
 sys.path.insert(0, str(SERVER_DIR))
 
 # Import the refactored engine + discovery (auto-registers all 131 nodes)

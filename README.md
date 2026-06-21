@@ -1,982 +1,694 @@
-[[Japanese](README.md)/[English](README_EN.md)]
+# 多模态节点编辑器（重构版）
 
-# Multimodal-Node-Editor
-ノードエディターベースのマルチモーダル処理アプリケーションです。<br>
-画像・音声・テキストなどをノードを繋げ処理することが可能で、処理検討や処理比較での利用を想定しています。<br>
+基于 [Multimodal-Node-Editor](https://github.com/102757017/Multimodal-Node-Editor) 项目重构的可视化节点编辑器，类似 VisionMaster。核心执行引擎已**完全重写**，支持复杂的帧同步、跨层级数据访问、动态端口、分片执行和全局模型注册表。
 
+![Next.js](https://img.shields.io/badge/Next.js-16-black) ![Python](https://img.shields.io/badge/Python-3.10+-blue) ![ReactFlow](https://img.shields.io/badge/ReactFlow-12-cyan) ![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green)
 
-<img src="https://github.com/user-attachments/assets/264acff2-4b6c-460f-b6a0-77fb959a6f66" width="100%">
+---
 
-# Features
-- 画像・音声・テキスト・深層学習など、100 以上のノードを標準搭載
-- Web カメラやマイク入力を用いたリアルタイム処理に対応
-- TOML + Python による新規ノードの簡単な追加が可能（GUI を自作しない場合）
-- 保存したグラフを GUI なしでヘッドレス実行可能
-- Google Colaboratory バックエンドでのシステム起動可能<br>
-  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Kazuhito00/Multimodal-Node-Editor/blob/main/run_gui_reactflow_colab.ipynb)
-  
-# Note
-ノードは作成者(高橋)が必要になった順に追加しているため、<br>
-画像処理、オーディオ処理、テキスト処理における基本的な処理を担うノードが不足していることがあります。
+## 目录
 
-# Requirements
-<details>
-<summary>フロントエンド</summary>
-  
+- [核心特性](#核心特性)
+- [系统架构](#系统架构)
+- [环境要求](#环境要求)
+- [安装步骤](#安装步骤)
+- [快速启动](#快速启动)
+  - [1. GUI 模式（run_gui.py）](#1-gui-模式run_guipy)
+  - [2. 无头模式（run_headless.py）](#2-无头模式run_headlesspy)
+- [界面使用指南](#界面使用指南)
+- [原始节点使用说明](#原始节点使用说明)
+- [全局模型注册表](#全局模型注册表)
+- [添加自定义数据类型](#添加自定义数据类型)
+- [配置文件格式](#配置文件格式)
+- [API 接口参考](#api-接口参考)
+- [项目结构](#项目结构)
+- [常见问题](#常见问题)
+
+---
+
+## 核心特性
+
+### 重构的执行引擎
+
+| 特性 | 说明 |
+|---|---|
+| **三状态模型** | `frame_complete`（帧完成）/ `idle`（空闲）/ `exhausted`（输入耗尽），不使用单一"完成"布尔值，清晰区分"帧结束"与"无更多数据"。 |
+| **分片执行** | `execute_step()` 每次处理所有就绪节点；`execute_generator()` 生成器模式逐步执行至帧完成。支持批处理和流式两种模式。 |
+| **帧同步** | 汇总模式：等待所有已连接输入端口在本帧都有数据。可配置超时（默认 5 秒），超时后跳过该节点继续执行，不中断整个图。帧缓存保留最近 N 帧数据。 |
+| **触发模式** | `ALL`（所有输入就绪才执行，每帧最多一次）或 `ANY`（任意输入更新即执行，同帧可多次触发）。每节点独立配置 `trigger_mode` 字段。 |
+| **跨层级数据访问** | 节点输入不仅可来自直连，还可通过配置面板的 ComboBox 选择任意上游节点的匹配类型输出端口。连线优先；有连线时 ComboBox 自动禁用。基于拓扑排序过滤，防止环。 |
+| **动态端口** | 真正在运行时创建/删除端口（非隐藏）。连接到最后一个端口时自动创建新端口。删除后重新编号。模板命名 `{前缀} {序号}`，可重命名显示名。至少保留 `min_count` 个。 |
+| **源节点识别** | 无输入端口的节点默认为源节点；可在 node.toml 中用 `is_source_node` 显式覆盖。`source_depleted` 标志驱动 `exhausted` 状态。 |
+
+### 全局模型注册表
+
+图中多个节点使用同一个大型模型（CLIP、LLM、ONNX 会话、MediaPipe）时，通过进程级全局注册表共享**同一个**实例，避免内存溢出：
+- 线程安全的 per-key 锁（加载器只调用一次）
+- 错误缓存（加载失败后不会每帧重试）
+- LRU 淘汰（按数量和字节数）
+- 实时快照 API 供 UI 监控
+
+### 自动加载 131 个预设节点
+
+原始项目 `src/nodes/` 下的全部 124 个节点在启动时自动发现并注册（122 个有实际计算逻辑，2 个因缺少 `mediapipe` 等可选依赖而 stub）。另含 7 个内置演示节点。**新增节点只需把文件夹放入 `src/nodes/`，重启后端即可自动出现在面板中，无需改代码。**
+
+---
+
+## 系统架构
+
 ```
-Node.js v18 or later
-
-react                ^18.3.1
-react-dom            ^18.3.1
-@xyflow/react        ^12.3.6
-dagre                ^0.8.5 
-@types/dagre         ^0.7.53
-vite                 ^6.0.5 
-typescript           ~5.6.2 
-@vitejs/plugin-react ^4.3.4 
-@types/react         ^18.3.18
-@types/react-dom     ^18.3.5
+┌─────────────────────────────────────────────────────────┐
+│  浏览器（Next.js，端口 3000）                              │
+│  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐  │
+│  │ 节点面板     │  │  ReactFlow   │  │ 配置/模型 面板  │  │
+│  │ (可折叠树)   │  │   画布       │  │   （标签页）    │  │
+│  └─────────────┘  └──────┬───────┘  └────────────────┘  │
+│                          │ fetch /api/*?XTransformPort=3030
+└──────────────────────────┼──────────────────────────────┘
+                           │  Caddy 网关（端口 81）
+┌──────────────────────────┼──────────────────────────────┐
+│  FastAPI 后端（端口 3030）                                 │
+│  ┌────────────┐  ┌───────────────┐  ┌────────────────┐  │
+│  │  main.py   │  │   core.py     │  │model_registry  │  │
+│  │ (REST API) │→ │ (三状态执行)   │  │   .py (共享    │  │
+│  │            │  │  execute_step │  │   模型缓存)    │  │
+│  └────────────┘  └───────┬───────┘  └────────────────┘  │
+│                          │                               │
+│  ┌───────────────────────┴──────────────────────────┐   │
+│  │  node_def.py + discovery.py（131 个节点）          │   │
+│  │  • 7 个内置演示节点                               │   │
+│  │  • 124 个原始节点（自动从 src/nodes/ 加载）        │   │
+│  └──────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────┘
 ```
-</details>
 
-<details>
-<summary>バックエンド</summary>
-  
-```
-Python 3.10 or later
+---
 
-pydantic            2.12.5    or later
-platformdirs        4.5.1     or later
-fastapi             0.128.0   or later
-python-multipart    0.0.21    or later
-uvicorn[standard]   0.40.0    or later
-opencv-python       4.11.0.86 or later
-pillow              12.1.0    or later
-motpy               0.0.10    or later
-sahi                0.11.36   or later
-onnx                1.20.0    or later
-onnxruntime         1.23.2    or later ※GPU を使用する場合は onnxruntime-gpu
-mediapipe           0.10.31   or later
-sounddevice         0.5.3     or later
-soundfile           0.13.1    or later
-webrtcvad-wheels    2.0.14    or later
-scipy               1.16.3    or later
-av                  16.0.1    or later
-openai              2.14.0    or later
-aiortc              1.14.0    or later
-websocket-client    1.9.0     or later
-vosk                0.3.45    or later
-google-cloud-speech 2.35.0    or later
-```
-</details>
+## 环境要求
 
-# Installation
-Google Colaboratory起動を行う方は、以下の作業は不要です。ノートブックの処理に従ってください。<br>
-また、以下の手順は、Pythonやnode.jsがインストールされている前提です。<br>
+| 依赖 | 版本 |
+|---|---|
+| Python | 3.10+（3.10 需安装 `tomli`，3.11+ 自带 `tomllib`） |
+| Node.js 或 Bun | Node 18+ / Bun 1.0+ |
+| 操作系统 | Linux、macOS、Windows |
+
+---
+
+## 安装步骤
+
+### 第 1 步：安装前端依赖
 
 ```bash
-# リポジトリクローン
-git clone https://github.com/Kazuhito00/Multimodal-Node-Editor
-cd Multimodal-Node-Editor
-
-# Python パッケージインストール
-pip install -r requirements.txt
-
-# モデルウェイトダウンロード
-python download_weights.py  # 全ファイルをダウンロード(既にファイルがある場合はスキップ)
-# python download_weights.py --force  # 全ファイルを強制的に上書き
-# python download_weights.py --max-size 150  # 指定サイズMB以上のファイルのダウンロードはスキップ
-
-# Node.js パッケージインストール
-cd src/gui/reactflow/frontend
+# 在项目根目录执行
+bun install
+# 或
 npm install
-cd ../../../../
-
-# コンフィグをコピー
-cp config.example.json config.json
 ```
 
-一部のノードはAPIキーなどを設定しないと使用できません。<br> 
-必要に応じて、`config.json` の以下キーを設定してください。
+### 第 2 步：安装后端依赖
+
+```bash
+cd mini-services/node-editor-server
+
+# 核心依赖（必需）
+pip install fastapi "uvicorn[standard]" pydantic pillow numpy tomli
+
+# 可选依赖——原始图像/音频深度学习节点需要
+pip install opencv-python onnxruntime mediapipe
+```
+
+> **Python 3.10 注意**：标准库不含 `tomllib`，必须安装 `tomli`（`pip install tomli`）。代码已自动兼容：优先用 `tomllib`，找不到时回退到 `tomli`。
+
+### 第 3 步：放置节点文件
+
+后端启动时自动从以下目录搜索节点（按优先级）：
+
+1. **`mini-services/node-editor-server/nodes/`** ← 本地节点目录（推荐，用户放置节点的地方）
+2. `download/multimodal-node-editor/src/nodes/` ← 原始克隆仓库（沙箱环境用）
+
+把原始项目的 `src/nodes/` 文件夹复制到 `mini-services/node-editor-server/nodes/` 即可：
+
+```
+mini-services/node-editor-server/
+├── nodes/                     ← 把原始 src/nodes/ 复制到这里
+│   ├── audio/
+│   │   ├── analysis/
+│   │   ├── input/
+│   │   └── ...
+│   ├── image/
+│   │   ├── draw/
+│   │   ├── deep_learning/
+│   │   └── ...
+│   ├── math/
+│   └── text/
+├── discovery.py
+├── main.py
+└── ...
+```
+
+无需修改任何 `node.toml` 或 `impl.py`——发现模块自动处理所有原始格式。
+
+### 第 4 步：确认前后端通信
+
+前端通过 Next.js rewrite 代理 `/api/*` 到后端 `http://localhost:3030`，**无需 Caddy 网关**。直接访问 `http://localhost:3000` 即可。如果你把后端跑在其他端口，设置环境变量 `BACKEND_URL` 后重启前端：
+
+```bash
+# Windows PowerShell
+$env:BACKEND_URL="http://localhost:8000"; bun run dev
+
+# Linux/macOS
+BACKEND_URL=http://localhost:8000 bun run dev
+```
+
+---
+
+## 快速启动
+
+### 1. GUI 模式（`run_gui.py`）
+
+同时启动后端（端口 3030）和前端（端口 3000），然后自动打开浏览器。
+
+```bash
+# 在项目根目录执行
+python run_gui.py
+```
+
+**参数选项：**
+
+```bash
+python run_gui.py --no-browser        # 不自动打开浏览器
+python run_gui.py --backend-only       # 仅启动后端
+python run_gui.py --frontend-only      # 仅启动前端（后端需已运行）
+python run_gui.py --backend-port 8000  # 自定义后端端口
+python run_gui.py --frontend-port 8080 # 自定义前端端口
+```
+
+启动后在浏览器访问 `http://localhost:3000`。
+
+> **Windows 用户**：脚本通过 `shutil.which()` 查找 `npm`/`npx`/`bun`，能正确识别 `npm.CMD` 等批处理文件。如果仍报找不到，请确认 `npm` 在系统 PATH 中（`where npm` 能找到）。
+
+### 2. 无头模式（`run_headless.py`）
+
+无需 UI，直接运行已保存的图——最高性能，无 HTTP 开销，numpy 数组在节点间直接传递。
+
+```bash
+# 在项目根目录执行
+python run_headless.py <graph.json> [选项]
+
+# 或在后端目录执行
+cd mini-services/node-editor-server
+python run_headless.py <graph.json> [选项]
+```
+
+**示例：**
+
+```bash
+# 列出所有 131 个可用节点
+python run_headless.py --list-nodes
+
+# 永久运行，用 cv2 窗口显示图像
+python run_headless.py my_graph.json
+
+# 以 100ms 间隔运行 10 帧
+python run_headless.py my_graph.json --count 10 --interval 100
+
+# 无显示（服务器环境），将终端输出图像保存到 out/ 目录
+python run_headless.py my_graph.json --no-display --output-dir out/
+
+# 流式模式——源节点逐帧推送数据，耗尽后自动停止
+python run_headless.py my_graph.json --stream
+
+# 执行后显示全局模型注册表状态
+python run_headless.py my_graph.json --count 5 --show-models
+```
+
+**如何获取 graph.json**：在 GUI 中构建图，点击顶栏的 **Save** 按钮，文件会保存到 `mini-services/node-editor-server/saves/` 目录。
+
+---
+
+## 界面使用指南
+
+### 顶栏
+
+| 按钮 | 功能 |
+|---|---|
+| **Run** | 流式模式：反复"开始新帧 + 执行"直到源节点耗尽 |
+| **Step Frame** | 执行一帧（start_frame → execute_step 至 frame_complete） |
+| **Reset** | 清除所有执行状态 |
+| **Save** | 将当前图保存为 `saves/graph-<时间戳>.json` |
+| **Load** | 重新加载上次保存的图 |
+
+状态徽章显示：`READY` / `RUNNING` / `FRAME COMPLETE` / `IDLE` / `EXHAUSTED`。
+
+### 左侧面板——节点面板
+
+- 可折叠的分类树（IMAGE / AUDIO / MATH / TEXT / OPENAI / UTILITY / AI / SOURCE / DISPLAY）
+- 搜索框过滤全部 131 个节点
+- 每个节点显示输入/输出端口类型色点和 `[src]`/`[dyn]`/`N/A` 徽章
+- 点击节点即添加到画布
+
+### 中间——画布
+
+- 从输出端口（右侧彩色圆点）拖到输入端口（左侧）建立连线
+- 每个端口有**独立的**圆点——连线连接到正确的端口
+- 点击节点选中（青色高亮环），在右侧面板编辑
+- **动态端口**：鼠标悬停在未连接的动态输入端口上会显示删除（×）按钮
+- 连接到动态端口组的最后一个端口时自动创建新端口
+- 图像节点始终显示预览框（执行前为空占位框，执行后显示实际图像）
+
+### 右侧面板——配置 / 模型 标签页
+
+**配置标签页**（选中节点时显示）：
+- 节点名称、触发模式（ALL/ANY）
+- 属性（数字 / 下拉 / 复选框 / 颜色 / 滑块 / 文件选择 / 文本域——与 node.toml schema 匹配）
+- **输入源**——每个输入端口的 ComboBox；列出所有拓扑上游的兼容输出端口。端口有连线时禁用。
+- **动态端口组**——添加按钮、数量显示（如 `2/8`）
+
+**模型标签页**：
+- 内存使用条（绿/黄/红）
+- 已加载模型列表：key、标签、大小、加载次数、命中次数、最后使用时间
+- 单个模型卸载按钮 + "全部卸载"按钮
+
+### Draw Mask / Draw Canvas 节点的绘制
+
+- 预览框上有 canvas 覆盖层，带 `nodrag` 类（鼠标拖动是绘制，不是拖动节点）
+- 工具栏：画笔 / 橡皮擦 / 清除
+- 笔画持久化到后端 `draw_commands` 属性
+- 即使未连接图像也可绘制（在黑色画布上画）
+
+---
+
+## 原始节点使用说明
+
+**可以——原始节点可以直接复制使用，无需任何修改。** 发现模块已处理所有原始 `node.toml` 格式：
+
+| 格式 | 支持 | 说明 |
+|---|---|---|
+| `[[ports]]` + `direction` | ✅ 完全支持 | 124 个原始节点全部使用此格式 |
+| `[[inputs]]` / `[[outputs]]`（旧格式） | ✅ 完全支持 | 当前仓库无此格式，但已支持 |
+| `dynamic_ports = "Image"`（字符串） | ✅ 自动转换为 DynamicPortConfig | 如 `image/draw/multi_image_concat` |
+| `[dynamic_ports.inputs]` 表格 | ✅ 完全支持 | 新式写法 |
+| `visible_when` 内联表 | ✅ 已解析 | 如 `face_detection` 有 7 个此类属性 |
+| `options_source`、`requires_api_key`、`requires_gpu` | ✅ 已解析 | 多个节点使用 |
+| `widget = "slider"` / `"button"` / `"file_picker"` / `"text_area"` | ✅ 已解析 | 多个节点使用 |
+
+### 添加新节点的方法
+
+1. 在 `mini-services/node-editor-server/nodes/<分类>/<节点名>/` 下创建文件夹
+2. 添加 `node.toml` 和 `impl.py`（impl.py 必须定义 `ComputeLogic` 子类）
+3. 重启后端——节点自动出现在面板中
+
+### impl.py 编写要求
+
+```python
+from node_editor.node_def import ComputeLogic  # 通过 shim 包导入，无需改路径
+
+class MyNodeLogic(ComputeLogic):
+    def compute(self, inputs, properties, context=None):
+        # inputs: 端口名 -> 值 的字典
+        # properties: 属性名 -> 值 的字典
+        # context: 包含 'node_id' 等信息的字典
+        return {"输出端口名": 结果值}
+```
+
+### 接入全局模型缓存（重型模型推荐）
+
+将节点中的模型加载代码改为 3 行即可加入全局缓存：
+
+```python
+# 改造前——每个节点各自加载一份
+session = onnxruntime.InferenceSession(model_path, providers=providers)
+self._model_cache[key] = session
+
+# 改造后——全局共享
+model, err = self._get_cached_model(
+    f"onnx:{model_path}:gpu={use_gpu}",
+    lambda: onnxruntime.InferenceSession(model_path, providers=providers),
+    label="onnx",
+)
+if err:
+    return {"__error__": err}
+# 使用 model ...
+```
+
+`_get_cached_model` 从 `ComputeLogic` 基类继承，无需额外 import。
+
+### 依赖缺失时的行为
+
+如果 `impl.py` 导入失败（如未安装 `mediapipe`），节点会以 **stub** 形式注册，compute 返回错误信息。节点仍出现在面板中，带 `N/A` 徽章，提示需要安装依赖。
+
+---
+
+## 全局模型注册表
+
+解决图中多个节点各自加载同一大型模型导致内存溢出的问题。
+
+### 工作原理
+
+```python
+from node_editor.model_registry import registry
+# 或在 ComputeLogic 子类中：
+model, err = self._get_cached_model(key, loader, est_bytes=..., label=...)
+```
+
+- `loader()` 每个 `key` **只调用一次**（线程安全，per-key 锁）
+- 相同 key 的后续调用返回缓存实例
+- 加载错误会被缓存（不会每帧重试）
+- 超过 16 个条目或超过 8 GB 时 LRU 淘汰最久未用的模型
+- `unload(key)` / `clear()` 手动释放
+
+### 监控方式
+
+右侧面板的 **模型** 标签页显示：
+- 每个已加载模型：key、标签、估算大小、加载次数、命中次数、最后使用时间
+- 总内存使用量，带颜色进度条
+- 卸载单个模型 / 全部卸载按钮
+
+API 接口：
+- `GET /api/models` — 注册表快照
+- `DELETE /api/models/{key}` — 卸载单个模型
+- `DELETE /api/models` — 卸载所有模型
+
+---
+
+## 添加自定义数据类型
+
+节点编辑器中的数据类型（data_type）是**纯字符串**，没有中央注册表。这意味着你可以直接在 `node.toml` 中使用任何字符串作为 `data_type`，无需注册。
+
+### 内置数据类型
+
+| data_type | 说明 | 颜色（UI 端口圆点） |
+|---|---|---|
+| `float` | 浮点数 | 绿色 |
+| `int` | 整数 | 亮绿色 |
+| `string` | 字符串 | 琥珀色 |
+| `bool` | 布尔值 | 紫色 |
+| `image` | 图像（numpy 数组 / base64） | 粉色 |
+| `audio` | 音频 | 青色 |
+| `any` | 任意类型（兼容所有） | 灰色 |
+
+### 类型兼容规则
+
+连线时，类型兼容性由 `core.py` 的 `_types_compatible()` 决定：
+- `any` 兼容所有类型（双向）
+- 相同类型兼容
+- `int` ↔ `float` 自动转换（int 输入接 float 会转 int，float 输入接 int 会转 float）
+- 其他组合不兼容（连线会被拒绝）
+
+### 添加新数据类型
+
+**1. 在 node.toml 中使用新类型名**
+
+```toml
+# 例：自定义 "point_cloud" 类型
+[[ports]]
+name = "cloud"
+data_type = "point_cloud"
+direction = "out"
+```
+
+**2. （可选）给新类型指定 UI 颜色**
+
+编辑 `src/lib/node-editor/types.ts` 的 `TYPE_COLORS`：
+
+```typescript
+export const TYPE_COLORS: Record<string, string> = {
+  float: "#10b981",
+  int: "#22c55e",
+  // ... 现有类型
+  point_cloud: "#8b5cf6",  // 新增
+};
+```
+
+**3. （可选）让新类型与现有类型兼容**
+
+编辑 `mini-services/node-editor-server/core.py` 的 `_types_compatible()`：
+
+```python
+def _types_compatible(src_type: Any, dst_type: Any) -> bool:
+    if src_type == "any" or dst_type == "any":
+        return True
+    if src_type == dst_type:
+        return True
+    if {src_type, dst_type} <= {"int", "float"}:
+        return True
+    # 新增：point_cloud 兼容 image（点云可渲染为图像）
+    if {src_type, dst_type} <= {"point_cloud", "image"}:
+        return True
+    return False
+```
+
+**4. 在 impl.py 中处理新类型的序列化**
+
+如果新类型不能直接 JSON 序列化，需要在 `core.py` 的 `_serialize_output()` 和 `_decode_image_input()` 中添加转换逻辑（参考 image 类型的处理）。
+
+### 完整示例：添加 "tensor" 类型
+
+```toml
+# nodes/custom/tensor_source/node.toml
+[[ports]]
+name = "tensor"
+data_type = "tensor"
+direction = "out"
+```
+
+```python
+# nodes/custom/tensor_source/impl.py
+from node_editor.node_def import ComputeLogic
+import numpy as np
+
+class TensorSourceLogic(ComputeLogic):
+    def compute(self, inputs, properties, context=None):
+        return {"tensor": np.zeros((3, 224, 224), dtype=np.float32)}
+```
+
+```typescript
+// src/lib/node-editor/types.ts — 添加颜色
+export const TYPE_COLORS: Record<string, string> = {
+  // ...
+  tensor: "#f97316",  // 橙色
+};
+```
+
+```python
+# core.py — 让 tensor 兼容 image（可可视化）
+if {src_type, dst_type} <= {"tensor", "image"}:
+    return True
+```
+
+### ComboBox 跨层级访问
+
+新类型自动支持 ComboBox 跨层级访问——只要上游节点的输出端口类型与当前节点的输入端口类型兼容，就会出现在 ComboBox 候选列表中（前提是有连线建立了上游 pipeline）。
+
+---
+
+## 配置文件格式
+
+保存的图（`saves/graph-*.json`）结构如下：
 
 ```json
 {
-  "api_keys": {
-    "openai": "SET_YOUR_OPENAI_API_KEY",
-    "google_stt": "PATH_TO_GOOGLE_CREDENTIALS_JSON"
-  }
+  "id": "graph-abc123",
+  "graph_format_version": "1.0.0",
+  "nodes": [
+    {
+      "id": "node-abc12345",
+      "definition_id": "math.add",
+      "definition_version": "1.0.0",
+      "name": "Add",
+      "inputs": [
+        {"id": "port-...", "name": "a", "display_name": "A", "data_type": "float", "direction": "in", "preview": false, "metadata": {}}
+      ],
+      "outputs": [
+        {"id": "port-...", "name": "result", "display_name": "Result", "data_type": "float", "direction": "out", "preview": false, "metadata": {}}
+      ],
+      "properties": {"value": 3.0, "input_sources": {"a": "node-xxx.value"}},
+      "position": {"x": 300, "y": 75},
+      "trigger_mode": "ALL",
+      "dynamic_port_configs": {},
+      "is_source_node": null
+    }
+  ],
+  "connections": [
+    {"id": "conn-...", "from_node_id": "node-...", "from_port_id": "port-...", "to_node_id": "node-...", "to_port_id": "port-..."}
+  ]
 }
 ```
 
-<details>
-<summary>コンフィグ詳細</summary>
-  
-| キー                        | 型       | デフォルト    | 説明                                   |
-|-----------------------------|----------|---------------|----------------------------------------|
-| node_search_paths           | string[] | ["src/nodes"] | ノード定義を検索するディレクトリ       |
-| ui.theme                    | string   | "light"       | テーマ（light / dark）                 |
-| ui.sidebar.show_edit        | bool     | false         | サイドバーにアンドゥリドゥメニューを表示         |
-| ui.sidebar.show_file        | bool     | true          | サイドバーにグラフ保存(json)メニューを表示     |
-| ui.sidebar.show_auto_layout | bool     | true          | サイドバーに自動レイアウトボタンを表示 |
-| graph.interval_ms           | int      | 50            | グラフ実行間隔（ミリ秒）               |
-| audio.sample_rate           | int      | 16000         | オーディオ処理のサンプルレート（Hz）       |
-| camera.max_scan_count       | int      | 2             | カメラデバイスの最大スキャン数         |
-| auto_download.video         | bool     | false         | 動画キャプチャ時の自動ダウンロード         |
-| auto_download.wav           | bool     | false         | 録音時の自動ダウンロード         |
-| auto_download.capture       | bool     | false         | 画像キャプチャ時の自動ダウンロード       |
-| auto_download.text          | bool     | false         | テキスト保存時の自動ダウンロード     |
-| api_keys.openai             | string   | ""            | OpenAI APIキー      |
-| api_keys.google_stt         | string   | ""            | Google Speech-to-Text 用 クレデンシャルjson格納パス         |
-</details>
+相比原始格式新增的字段：`trigger_mode`、`dynamic_port_configs`、`is_source_node`、`input_sources`（在 `properties` 内）、以及每个端口的 `metadata`（用于动态端口标记）。
+
+---
+
+## API 接口参考
+
+基础地址：`http://localhost:3030`（直连）或通过 Caddy 网关加 `?XTransformPort=3030`。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/nodes` | 列出所有节点定义 + 分类树 |
+| GET | `/api/graph` | 获取当前图 |
+| POST | `/api/graph/nodes` | 添加节点 `{definition_id, position, name}` |
+| DELETE | `/api/graph/nodes/{id}` | 删除节点 |
+| POST | `/api/graph/connections` | 添加连线 `{from_node_id, from_port_id, to_node_id, to_port_id}` |
+| DELETE | `/api/graph/connections/{id}` | 删除连线 |
+| PUT | `/api/graph/nodes/{id}/properties` | 更新属性 `{properties: {...}}` |
+| PUT | `/api/graph/nodes/{id}/trigger-mode` | 设置 ALL/ANY `{mode: "ALL"}` |
+| PUT | `/api/graph/nodes/{id}/input-source` | 设置 ComboBox 数据源 `{port_name, source}` |
+| GET | `/api/graph/nodes/{id}/combobox/{port_name}` | 列出端口的上游候选 |
+| POST | `/api/graph/nodes/{id}/dynamic-port` | 添加动态端口 `{group_name}` |
+| DELETE | `/api/graph/nodes/{id}/dynamic-port/{port_id}` | 删除动态端口 |
+| PUT | `/api/graph/nodes/{id}/port/{port_id}/rename` | 重命名端口显示名 |
+| POST | `/api/graph/start-frame` | 开始新帧 |
+| POST | `/api/graph/source-data/{id}` | 推送源数据 `{data: {port_name: value}}` |
+| POST | `/api/graph/mark-depleted/{id}` | 标记源节点已耗尽 |
+| POST | `/api/graph/execute-step` | 执行一步 `{context: {...}}` → `{status, outputs, errors, ...}` |
+| POST | `/api/graph/reset-frame` | 重置执行状态 |
+| GET | `/api/graph/status` | 获取帧 id、耗尽状态、同步超时 |
+| POST | `/api/graph/save` | 保存到文件 `{path?}` |
+| POST | `/api/graph/load` | 从文件加载 `{data? 或 path?}` |
+| GET | `/api/models` | 模型注册表快照 |
+| DELETE | `/api/models/{key}` | 卸载单个模型 |
+| DELETE | `/api/models` | 卸载所有模型 |
+
+---
+
+## 项目结构
 
-# Launch the application
-* <b>ローカルPCでの起動</b><br>
-  以下のスクリプトを実行してください。起動に成功するとブラウザが立ち上がります。
-  ```
-  python run_gui_reactflow.py
-  ```
-  | オプション | 説明 |
-  |-----------|------|
-  | `--config <path>` | 設定ファイルのパス（デフォルト: config.json） |
-  
-  または、以下をそれぞれ別コンソールにて実行し、ブラウザにて`http://localhost:5173/`にアクセスしてください。<br>
-  
-  ```
-  uvicorn src.gui.reactflow.backend.main:app --reload
-  ```
-  ```
-  cd src/gui/reactflow/frontend
-  npm run dev
-  ```
-* <b>Google Colaboratoryでの起動</b><br>  
-  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Kazuhito00/Multimodal-Node-Editor/blob/main/run_gui_reactflow_colab.ipynb)<br>
-Colaboratoryでノートブックを開き、上から順に実行してください。<br>
-  最終セルの出力結果に`https://localhost:8000/`と表示されるため、そのリンクをクリックしてください<br><img src="https://github.com/user-attachments/assets/04313de9-535e-48cc-a605-2551eda35e16" width="75%">
-
-* <b>ヘッドレス実行</b><br>
-ReactFlowフロントエンドを起動せずにコマンドラインでグラフ実行が可能です<br>
-  ```
-  python run_headless.py graph.json
-  ```
-  | オプション | 説明 |
-  |-----------|------|
-  | `--config <path>` | 設定ファイルのパス（デフォルト: config.json） |
-  | `--count <n>` | 実行回数（0=無限ループ、1=1回実行、デフォルト: 0） |
-
-# Usage
-<details>
-<summary>ノード配置 & 実行</summary>
-
-1. サイドバーからノードをキャンバスにドラッグ＆ドロップ<br><img src="https://github.com/user-attachments/assets/186dccbf-cecb-48ac-86e3-975eaf6f9f7c" width="50%">
-2. ノード間のポートを接続<br>※同色同士のポートで接続可能<br><img src="https://github.com/user-attachments/assets/39594af8-8b7c-4fe7-be23-a68eaa968840" width="50%">
-3. Start ボタンをクリックして実行(ショートカットキー：Ctrl + Enter)<br>※実行中はノード配置やポート接続の変更は不可<br><img src="https://github.com/user-attachments/assets/c262bb0c-04a6-434f-92ac-00a43afe2864" width="50%">
-</details>
-
-<details>
-<summary>エッジ削除、ノード削除</summary>
-  
-* 削除したいエッジやノードを選択してDeleteキー<br><img src="https://github.com/user-attachments/assets/3554273d-a265-4cf1-8eae-59bdbbd2b6d5" width="50%">
-</details>
-
-<details>
-<summary>グラフjsonエクスポート、インポート</summary>
-
-* グラフjsonエクスポート：Save ボタンをクリック(ショートカットキー：Ctrl + S)<br><img src="https://github.com/user-attachments/assets/e13218ae-9af6-494c-b97c-a9b1b3558736" width="50%">
-* グラフjsonインポート：Load ボタンをクリック(ショートカットキー：Ctrl + L)<br><img src="https://github.com/user-attachments/assets/17df193c-ab7f-43f7-ac3b-6b14b2d8bb0a" width="50%">
-</details>
-
-<details>
-<summary>オートレイアウト</summary>
-
-* Auto Layout ボタンをクリック(ショートカットキー：Ctrl + A)<br><img src="https://github.com/user-attachments/assets/4f8c6417-a8df-40a7-904f-4a943c4b66e9" width="50%">
-</details>
-
-<details>
-<summary>ノードへのコメント</summary>
-
-* ノードを右クリックして、Add Commentをクリック<br><img src="https://github.com/user-attachments/assets/14a18fcf-51c5-4d27-bd33-122cd5a44d5b" width="50%">
-</details>
-
-# Keyboard Shortcuts
-| ショートカット                   | 動作                 | 備考                                        |
-|----------------------------------|----------------------|---------------------------------------------|
-| Ctrl + Enter                     | START/STOP切り替え   | 実行中ならSTOP、停止中ならSTART             |
-| Escape                           | STOP                 | グラフ実行を停止                            |
-| Ctrl + P                         | Pause/Resume切り替え | 実行中ならPause、一時停止中ならResume       |
-| Ctrl + Z                         | Undo                 | 元に戻す                                    |
-| Ctrl + Y                         | Redo                 | やり直す                                    |
-| Ctrl + A                         | Auto Layout          | ノードを自動配置                            |
-| Ctrl + S                         | Save                 | グラフをJSONで保存（エクスポート）          |
-| Ctrl + L                         | Load                 | グラフJSONを読み込み（インポート）          |
-| Delete                           | 削除                 | 選択中のノード/エッジを削除（実行中は無効） |
-
-# Nodes
-
-### Image
-
-<details>
-<summary>Image > Input</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| Image | 静止画像ファイル（jpg, png, bmp, gif）を読み込む |
-| Webcam | Webカメラからリアルタイム映像を取得<br>Colaboratoryバックエンドで利用不可|
-| Webcam (WebSocket) | ブラウザのgetUserMedia() API経由でWebカメラ映像を取得<br>Colaboratoryバックエンドで利用可 |
-| Video | 動画ファイル（mp4, avi）を読み込んでフレーム再生<br>・Realtime Syncチェックボックス：処理時間に同期してフレームを読み出すオプション<br>・Frame Step：読み込みフレーム間隔（realtime_sync=false時のみ）<br>・Preload All Frameチェックボックス：全フレームをプリロードする<br>※サイドバーの「Loop Playback」がONの場合、ループ再生を行う |
-| Video Frame | 動画の指定フレーム位置の画像を出力 |
-| RTSP | ネットワークカメラのRTSP入力から映像を取得 |
-| Solid Color | 単色画像を生成<br>・width：画像幅（1-4096、デフォルト: 640）<br>・height：画像高さ（1-4096、デフォルト: 360）<br>・color：色（カラーピッカー、デフォルト: #ff0000） |
-| URL Image | URLから画像をダウンロードして取得 |
-
-</details>
-
-<details>
-<summary>Image > Transform</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| Crop | 正規化座標（0.0-1.0）で指定した領域を切り抜く<br>画像エリアをドラッグして領域を指定可能 |
-| Flip | 画像を水平/垂直方向に反転する |
-| Resize | 指定解像度・補間方法でリサイズする |
-| Rotate | 指定角度で画像を回転する（90度の倍数以外では余白が発生） |
-| 3D Rotate | 3次元空間でのピッチ・ヨー・ロール回転を行う |
-| Click Perspective | 画像クリックでの4点指定による透視変換を行う |
-
-</details>
-
-<details>
-<summary>Image > Filter</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| Apply Color Map | グレースケール画像に疑似カラーを適用する |
-| Background Subtraction | 背景差分で前景を検出する |
-| Blur | 各種ぼかしフィルタを適用する |
-| Morphology | モルフォロジー変換を行う |
-| Brightness | 輝度を加算調整する |
-| Canny | Canny法によるエッジ検出を行う |
-| Contrast | コントラストを調整する |
-| Equalize Hist | HSVのVチャンネルにヒストグラム平坦化を適用する |
-| Filter 2D (3x3) | 任意の3x3カーネルによる畳み込みフィルタを適用する |
-| Gamma | ガンマ補正を適用する（LUTテーブル使用） |
-| Grayscale | 画像をグレースケールに変換する（3チャンネル維持） |
-| RGB Extract | 指定したRGBチャンネルを抽出する |
-| RGB Adjust | RGB各チャンネルに値を加算する |
-| HSV Adjust | HSV色空間で色相・彩度・明度を調整する |
-| Inpaint | マスクを用いてインペイントする |
-| Omnidirectional Viewer | 正距円筒図法の360度画像を回転表示する<br>画像のドラッグで視点を変更可能 |
-| Sepia | セピア調エフェクトを適用する |
-| Threshold | 各種アルゴリズムで2値化する |
-
-</details>
-
-<details>
-<summary>Image > Marker Detection</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| QR Code | QRコードを検出・デコードし、結果をJSON出力する |
-| ArUco Marker | ArUcoマーカーを検出し、ID・四隅座標をJSON出力する |
-| AprilTag | AprilTagを検出し、ID・四隅座標をJSON出力する |
-
-</details>
-
-<details>
-<summary>Image > Deep Learning</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| Image Classification | ImageNet 1000クラスで画像を分類する<br>・Model：使用するモデルを選択する（ドロップダウン）|
-| Object Detection | 物体検出を行う<br>motpyによるマルチオブジェクトトラッキング、SAHIによるスライス処理検出にも対応 |
-| Face Detection | 顔検出を行う<br>motpyによるマルチオブジェクトトラッキング、SAHIによるスライス処理検出にも対応 |
-| Low-Light Image Enhancement | 暗所画像の画像強調を行う |
-| Depth Estimation | 単眼深度推定を行う |
-| Pose Estimation | 人体姿勢推定を行う |
-| Hand Pose Estimation | 手の姿勢推定を行う |
-| Semantic Segmentation | セマンティックセグメンテーションを行う |
-| OCR | 光学文字認識を行う |
-
-</details>
-
-<details>
-<summary>Image > Analysis</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| Color Histogram | 各チャンネルのヒストグラムをグラフ表示する |
-| LBP Histogram | Local Binary Patternヒストグラムをバーグラフ表示する |
-| FFT | FFTマグニチュードスペクトラムを対数スケールで可視化する |
-
-</details>
-
-<details>
-<summary>Image > Draw</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| Draw Text (ASCII) | OpenCVでASCIIテキストを描画する（改行対応） |
-| Draw Canvas | 入力画像上にフリーハンド描画を行う |
-| Draw Mask | 入力画像上にフリーハンド描画を行い二値マスクを生成する |
-| Simple Concat | 2枚の画像を連結する |
-| Multi Image Concat | 最大9枚の画像をグリッドレイアウトで連結する |
-| Comparison Slider | 2枚の画像を比較スライダーで表示する |
-| Picture In Picture | Image 2をImage 1の指定領域に重ね合わせる<br>画像上のドラッグで領域指定が可能 |
-| Blend | 各種ブレンドモードで合成する |
-| Alpha Blend | 重み付きアルファブレンドを行う |
-
-</details>
-
-<details>
-<summary>Image > Output</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| Image Display | 入力画像をノード上に表示する（ノードリサイズ可能） |
-| Capture | ボタン押下で画像をキャプチャし保存する |
-| Write Video | 入力画像をMP4動画として保存する（STOP時に保存） |
-
-</details>
-
-<details>
-<summary>Image > Other</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| Execute Python | ユーザー入力のPythonコードを実行する（input_image → output_image）<br>OpenAI APIキーを設定している場合、生成AIによるコード生成も可能 |
-
-</details>
-
-### Audio
-
-<details>
-<summary>Audio > Input</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| Mic | マイクからリアルタイム音声を取得する |
-| Mic (WebSocket) | ブラウザのgetUserMedia() API経由でマイク音声を取得する<br>Echo Cancellationは、 Speaker (Browser)ノードで音声出力を行った場合のみ有効 |
-| Audio File | 音声ファイル（wav, mp3, ogg）を再生する<br>※サイドバーの「Loop Playback」がONの場合、ループ再生を行う |
-| Noise | 各種ノイズ信号を生成する |
-| Zero | 無音（ゼロデータ）を出力する |
-
-</details>
-
-<details>
-<summary>Audio > Dynamics</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| Volume (Hard Limit) | 音量をスケール調整し、±1.0でハードクリッピングする |
-| Volume (Soft Limit : tanh) | 音量をスケール調整し、tanh関数で滑らかにクリッピングする |
-| Dynamic Range Compression | 閾値を超えた信号を圧縮する |
-| Expander | 閾値未満の信号を減衰する |
-| Noise Gate | 閾値未満の信号をカットする |
-
-</details>
-
-<details>
-<summary>Audio > Filter</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| Lowpass Filter | カットオフ周波数より高い成分を除去する（Butterworth IIR） |
-| Highpass Filter | カットオフ周波数より低い成分を除去する（Butterworth IIR）|
-| Bandpass Filter | 指定周波数範囲のみ通過させる（Butterworth IIR） |
-| Bandstop Filter | 指定周波数範囲を除去する（Butterworth IIR） |
-| Equalizer | 指定周波数帯域をブースト/カットする |
-
-
-</details>
-
-<details>
-<summary>Audio > Deep Learning</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| Speech Enhancement | 音声を強調する（ノイズ除去） |
-| Audio Classification | 音声イベントを分類する |
-
-
-</details>
-
-<details>
-<summary>Audio > Recognition</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| Google STT | Google Cloud Speech-to-Text APIでストリーミング音声認識を行う<br>※コンフィグの api_keys.google_stt にGoogleクレデンシャルjsonを指定している場合のみ有効 |
-| Vosk STT | Vosk APIでストリーミング音声認識を行う |
-
-</details>
-
-<details>
-<summary>Audio > Utility</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| Delay | 音声信号を指定時間遅延させる |
-| Mixer | 2つの音声信号を加算ミックスする |
-| Waveform to Image | 音声波形からウェーブフォーム画像を作成する |
-
-</details>
-
-<details>
-<summary>Audio > Analysis</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| Spectrogram | 音声信号のスペクトログラムを表示する |
-| Power Spectrum | 音声信号のパワースペクトルを表示する |
-| VAD | 音声区間検出を行う |
-| MSC | 2信号間のMagnitude Squared Coherence（周波数別類似度）を計算する |
-
-</details>
-
-<details>
-<summary>Audio > Output</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| Speaker | スピーカーから音声を再生する |
-| Speaker (Browser) | ブラウザのWeb Audio APIで音声を再生する |
-| Write WAV | 入力音声をWAVファイルとして記録する（STOP時に保存） |
-
-</details>
-
-### Text
-
-<details>
-<summary>Text > Input</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| Text | テキストを出力 |
-
-</details>
-
-<details>
-<summary>Text > Process</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| Text Replace | 文字列を置換する |
-| Text Join | 2つのテキストを結合する |
-| Text Format | テンプレートのプレースホルダー {1}〜{10} を入力値で置換する |
-| JSON Parse | JSON文字列をパースしてキー/パスで値を抽出する |
-| JSON Array Format | JSON配列からフィールドを抽出してテキストにフォーマットする |
-
-</details>
-
-<details>
-<summary>Text > Deep Learning</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| Language Classification | テキストの言語を判定する |
-
-</details>
-
-<details>
-<summary>Text > Output</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| Text Display | テキスト内容をノード上に表示する |
-| Text Save | テキストをファイルに保存する |
-
-</details>
-
-### OpenAI
-
-<details>
-<summary>OpenAI</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| OpenAI LLM | OpenAI LLM APIを呼び出す<br>Executeボタンを押したタイミングで実行する<br>※コンフィグの api_keys.openai にOpenAI APIキーを指定している場合のみ有効 |
-| OpenAI VLM | OpenAI LLM APIを呼び出す（画像入力）<br>Executeボタンを押したタイミングで実行する<br>※コンフィグの api_keys.openai にOpenAI APIキーを指定している場合のみ有効 |
-| OpenAI STT | OpenAI Realtime APIで音声を文字起こしする<br>※コンフィグの api_keys.openai にOpenAI APIキーを指定している場合のみ有効 |
-| OpenAI Image Generation | OpenAI Image Generation APIで画像を生成する<br>※コンフィグの api_keys.openai にOpenAI APIキーを指定している場合のみ有効 |
-
-</details>
-
-## Math
-
-<details>
-<summary>Math > Value</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| Int | 整数値を出力 |
-| Float | 浮動小数点値を出力 |
-| Clamp | 値を指定範囲内に制限する |
-| Float2Int | 浮動小数点を整数に変換 |
-
-</details>
-
-<details>
-<summary>Math > Operation</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| Add | 2つの数値を加算（a + b） |
-| Sub | 2つの数値を減算（a - b） |
-| Mul | 2つの数値を乗算（a × b） |
-| Div | 2つの数値を除算（a ÷ b）、ゼロ除算時は0を返す |
-| Mod | 剰余を計算（a % b） |
-| Abs | 絶対値を計算 |
-| Sin | 度数法の角度からサイン値を計算<br>・degree：角度（-360〜360度） |
-
-</details>
-
-<details>
-<summary>Math > Logic</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| AND | 論理積（両方が0以外で1、それ以外は0） |
-| OR | 論理和（どちらかが0以外で1、両方0で0） |
-| NOT | 論理否定（0で1、0以外で0） |
-| XOR | 排他的論理和（一方のみ0以外で1） |
-
-</details>
-
-### Utility
-
-<details>
-<summary>Utility</summary>
-
-| ノード名 | 説明 |
-|:--|:--|
-| Elapsed Time | Start からの経過時間を出力 |
-| Timer Trigger | 指定間隔でトリガー（1）を出力、それ以外は0 |
-| Trigger Button | ボタン押下時にトリガー（1）を出力、それ以外は0 |
-
-</details>
-
-# Directory Structure
 ```
-├── src/
-│   ├── node_editor/              # コアライブラリ
-│   │   ├── core.py               # グラフ実行エンジン
-│   │   ├── models.py             # データモデル（Node, Port, Connection）
-│   │   ├── node_def.py           # ノード定義システム
-│   │   ├── commands.py           # Undo/Redo
-│   │   ├── settings.py           # 設定管理
-│   │   └── image_utils.py        # 画像ユーティリティ
-│   ├── nodes/                    # ノード実装
-│   │   ├── image/                # 画像ノード
-│   │   ├── audio/                # 音声ノード
-│   │   ├── math/                 # 数値演算ノード
-│   │   ├── text/                 # テキストノード
-│   │   ├── openai/               # OpenAI連携ノード
-│   │   └── utility/              # ユーティリティノード
-│   └── gui/
-│       ├── reactflow/            # ReactFlow
-│       │   ├── backend/          # FastAPI バックエンド
-│       │   └── frontend/         # React フロントエンド
-│       └── headless/             # ヘッドレス実行
-├── config.example.json           # アプリケーション設定
-├── download_weights.py           # モデルダウンロードスクリプト
-├── run_gui_reactflow.py          # GUI起動スクリプト
-├── run_gui_reactflow_colab.ipynb # Colaboratory用ノートブック
-├── run_headless.py               # ヘッドレス実行スクリプト
-├── requirements.txt              # Python依存パッケージ
-└── requirements-gpu.txt          # GPU用追加パッケージ
+.
+├── run_gui.py                          # ← 快速启动：后端 + 前端
+├── run_headless.py                     # ← 快速启动：无头执行
+├── README.md                           # ← 本文件
+├── package.json                        # Next.js 前端
+├── src/                                # 前端（Next.js 16 + ReactFlow）
+│   ├── app/
+│   │   ├── page.tsx                    # 主编辑器页面
+│   │   └── layout.tsx
+│   ├── components/
+│   │   ├── node-editor/
+│   │   │   ├── CustomNode.tsx          # ReactFlow 节点（端口、预览、绘制）
+│   │   │   ├── NodePalette.tsx         # 可折叠分类树
+│   │   │   ├── ConfigPanel.tsx         # 属性 + ComboBox + 动态端口
+│   │   │   └── ModelsPanel.tsx         # 全局模型注册表视图
+│   │   └── ui/                         # shadcn/ui 组件
+│   └── lib/
+│       └── node-editor/
+│           ├── types.ts                # TypeScript 类型
+│           └── api.ts                  # API 客户端
+│
+├── mini-services/
+│   └── node-editor-server/             # 后端（FastAPI，端口 3030）
+│       ├── main.py                     # REST API
+│       ├── core.py                     # 重构的三状态执行引擎
+│       ├── models.py                   # Pydantic 模型
+│       ├── node_def.py                 # NodeDefinition + 7 个内置演示节点
+│       ├── discovery.py                # 自动加载 124 个原始节点
+│       ├── model_registry.py           # 全局共享模型缓存
+│       ├── run_headless.py             # 无头运行器（项目根目录也有副本）
+│       └── node_editor/                # shim 包，使 impl.py 的 import 正常工作
+│           ├── __init__.py
+│           ├── node_def.py
+│           ├── model_registry.py
+│           ├── image_utils.py
+│           └── settings.py
+│
+├── download/
+│   └── multimodal-node-editor/         # 原始克隆仓库（提供 src/nodes/）
+│       └── src/nodes/                  # 124 个预设节点（自动发现）
+│
+├── Caddyfile                           # 网关配置（端口 81 → 3000，XTransformPort）
+└── worklog.md                          # 开发日志
 ```
 
-# Custom Node Development
-新しいノードを作成する場合は `src/nodes/<category>/<node_name>/` に作成します。<br>
-各ノードは、`node.toml`と`impl.py`の2つのファイルで構成されます。<br>
-以下は、Image/Filter/Cannyノードの構成例です。
+---
+
+## 常见问题
+
+### 后端无法启动
+
 ```bash
-src/nodes/
-└── image/
-    ├── category.toml             # カテゴリ設定
-    └── filter/
-        ├── category.toml         # サブカテゴリ設定
-        └── canny/
-            ├── node.toml         # ノードメタデータ
-            └── impl.py           # 実装
+# 确认 Python 版本（需 3.10+）
+python3 --version
+
+# 安装依赖
+cd mini-services/node-editor-server
+pip install fastapi "uvicorn[standard]" pydantic pillow numpy tomli
 ```
 
-<details>
-<summary>カテゴリ定義（category.toml）</summary>
+### Python 3.10 报 `No module named 'tomllib'`
 
-各カテゴリフォルダに `category.toml` を配置してサイドバーの表示を制御します。
+Python 3.10 标准库不含 `tomllib`，需安装 backport：
 
-```toml
-display_name = "Image"    # サイドバーに表示する名前
-order = 10                # 表示順序（小さいほど上）
-default_open = false      # サイドバーでデフォルトで展開するか
+```bash
+pip install tomli
 ```
 
-| フィールド | 型 | デフォルト | 説明 |
-|-----------|---|----------|------|
-| `display_name` | string | フォルダ名 | サイドバーに表示する名前 |
-| `order` | int | 100 | 表示順序（小さいほど上） |
-| `default_open` | bool | true | デフォルトで展開するか |
-| `requires_config` | string | null | 必要な設定キー（null指定の場合は常に表示） |
+代码已自动兼容：优先用 `tomllib`（3.11+），找不到时回退到 `tomli`。
 
-</details>
+### 节点显示 "N/A" 徽章
 
-<details>
-<summary>ノード定義（node.toml）</summary>
+节点的 `impl.py` 导入失败——通常是缺少可选依赖。查看后端日志中的 `[stub]` 警告：
 
-##### 基本構成
-
-```toml
-name = "image.filter.canny"
-version = "1.0.0"
-display_name = "Canny"
-description = "Applies Canny edge detection to an image."
-order = 50
-gui = ["reactflow", "headless"]
-
-[[ports]]
-name = "image"
-data_type = "image"
-direction = "inout"
-
-[[ports]]
-name = "low_threshold"
-data_type = "float"
-direction = "in"
-
-[[ports]]
-name = "high_threshold"
-data_type = "float"
-direction = "in"
-
-[[properties]]
-name = "low_threshold"
-display_name = "Low"
-type = "int"
-default = 50
-widget = "slider"
-min = 0
-max = 255
-
-[[properties]]
-name = "high_threshold"
-display_name = "High"
-type = "int"
-default = 150
-widget = "slider"
-min = 0
-max = 255
+```
+[stub] image.deep_learning.classification: impl.py load failed — ModuleNotFoundError: No module named 'mediapipe'
 ```
 
-##### ノード設定オプション
+安装缺失的包（如 `pip install mediapipe onnxruntime opencv-python`）后重启。
 
-| フィールド | 型 | デフォルト | 説明 |
-|-----------|---|----------|------|
-| `name` | string | 必須 | ノードID（`category.subcategory.name`形式） |
-| `version` | string | 必須 |  |
-| `display_name` | string | name | サイドバー/ノードに表示する名前 |
-| `description` | string | "" | ノードの説明 |
-| `order` | int | 100 | カテゴリ内での表示順序 |
-| `gui` | string[] | [] | 対応GUI（空=全対応、`reactflow`, `headless`） |
-| `measure_time` | bool | true | 処理時間計測の対象か |
-| `run_when_stopped` | bool | false | STOP中も実行するか |
+### Windows 下 run_gui.py 报 "Neither bun nor npm found"
 
-##### ポート定義（`[[ports]]`）
+脚本通过 `shutil.which()` 查找 `npm`/`npx`/`bun`，能识别 Windows 的 `.CMD`/`.BAT` 扩展名。如仍报错：
 
-```toml
-[[ports]]
-name = "image"
-data_type = "image"
-direction = "inout"
-preview = true
-```
+1. 确认 npm 在 PATH 中：在命令行执行 `where npm`，应返回类似 `C:\Program Files\nodejs\npm.CMD`
+2. 如果 `where npm` 找不到，需重新安装 Node.js 并勾选"Add to PATH"
+3. 重启终端后重试
 
-| フィールド | 型 | デフォルト | 説明 |
-|-----------|---|----------|------|
-| `name` | string | 必須 | ポート名 |
-| `data_type` | string | 必須 | データ型（下記参照） |
-| `direction` | string | "in" | `in`, `out`, `inout` |
-| `display_name` | string | name | UIに表示する名前 |
-| `preview` | bool | true | プレビュー表示するか |
+### UI 显示 "Loading nodes…" 且右上角报 404
 
-**データ型一覧:**
+这表示前端无法连接后端。原因和解决方案：
 
-| データ型 | 説明 |
-|---------|------|
-| `image` | 画像（numpy配列）。接続可能: image |
-| `audio` | 音声データ。接続可能: audio |
-| `int` | 整数。接続可能: int, float |
-| `float` | 浮動小数点。接続可能: int, float |
-| `string` | 文字列。接続可能: string |
-| `trigger` | トリガー信号（0/1）。接続可能: trigger |
-| `any` | 任意の型。接続可能: すべて |
+1. **后端未启动** — 确认 `http://localhost:3030/api/nodes` 能返回 JSON：
+   ```bash
+   curl http://localhost:3030/api/nodes
+   ```
+   如果连接失败，启动后端：`cd mini-services/node-editor-server && python -m uvicorn main:app --port 3030 --reload`
 
-</details>
+2. **后端端口不是 3030** — 设置 `BACKEND_URL` 环境变量后重启前端：
+   ```bash
+   # Windows PowerShell
+   $env:BACKEND_URL="http://localhost:8000"; bun run dev
+   ```
 
-<details>
-<summary>プロパティ定義（[[properties]]）</summary>
+3. **Next.js rewrite 未生效** — `next.config.ts` 中应有 `rewrites()` 把 `/api/*` 代理到后端。如果修改了 next.config.ts 需重启前端。
 
-##### 基本構成
+### 节点放进了 nodes/ 目录但面板里看不到
 
-```toml
-[[properties]]
-name = "low_threshold"
-display_name = "Low"
-type = "int"
-default = 50
-widget = "slider"
-min = 0
-max = 255
+1. 确认路径正确：节点应在 `mini-services/node-editor-server/nodes/<分类>/<节点名>/node.toml`
+2. 查看后端启动日志，应有 `Discovering nodes in: .../nodes` 和节点计数
+3. 确认 `node.toml` 中有 `name = "xxx.yyy"` 字段（definition_id）
+4. 如果 `impl.py` 导入失败，节点会以 stub 形式出现，带 `N/A` 徽章——检查后端日志的 `[stub]` 警告
 
-[[properties]]
-name = "high_threshold"
-display_name = "High"
-type = "int"
-default = 150
-widget = "slider"
-min = 0
-max = 255
-```
+### 前端无法连接后端（旧）
 
-#### プロパティオプション
+前端通过 Next.js rewrite 代理 `/api/*` 到后端 `http://localhost:3030`，**无需 Caddy 网关**。直接访问 `http://localhost:3000` 即可。如果你把后端跑在其他端口，设置环境变量 `BACKEND_URL` 后重启前端。
 
-| フィールド | 型 | デフォルト | 説明 |
-|-----------|---|----------|------|
-| `name` | string | 必須 | プロパティ名 |
-| `display_name` | string | name | 表示名 |
-| `type` | string | "float" | データ型（`int`, `float`, `string`, `bool`） |
-| `default` | any | null | デフォルト値 |
-| `widget` | string | "input" | UIウィジェット（下記参照） |
-| `min` | float | null | 最小値（slider/number_input用） |
-| `max` | float | null | 最大値（slider/number_input用） |
-| `step` | float | null | ステップ値 |
-| `options` | array | [] | dropdown用の選択肢 |
-| `options_source` | string | null | 動的オプションソース（`cameras`, `audio_inputs`） |
-| `accept` | string | null | file_pickerで許可するファイルタイプ |
-| `button_label` | string | null | buttonウィジェットのラベル |
-| `rows` | int | null | text_areaの行数 |
-| `visible_when` | object | null | 条件付き表示 |
-| `disabled_while_streaming` | bool | false | 実行中は編集不可 |
-| `requires_streaming` | bool | false | 実行中のみ有効（ボタン用） |
-| `requires_gpu` | bool | false | GPU利用可能時のみ表示 |
-| `requires_api_key` | string | null | 指定APIキーが設定されている時のみ表示 |
+### 端口圆点与端口文字不对齐
 
+每个 Handle 通过 `top: 50%` 相对于端口行（`position: relative`）定位。如自定义节点 CSS，请确保：
+- 端口行保持 `position: relative`
+- 左侧 Handle 的 `transform` 用 `translate(-50%, -50%)`，右侧用 `translate(50%, -50%)`
+- body padding 为 `px-3`（12px）—— Handle 偏移 `-12px` 到节点边框
 
-##### ウィジェット一覧
+### Draw Mask 上绘制时拖动了节点
 
-**標準ウィジェット:**
+canvas 覆盖层需带 `nodrag` 类。如替换了组件，确保 `<canvas>` 及其容器有 `className="... nodrag"`。
 
-| ウィジェット | 説明 |
-|-------------|------|
-| `slider` | スライダー。`min`, `max`, `step` |
-| `number_input` | 数値入力。`min`, `max`, `step` |
-| `text_input` | テキスト入力（1行） |
-| `text_area` | テキストエリア（複数行）。`rows` |
-| `text_display` | テキスト表示（読み取り専用） |
-| `dropdown` | ドロップダウン。`options`, `options_source` |
-| `checkbox` | チェックボックス |
-| `color_picker` | 色選択 |
-| `file_picker` | ファイル選択。`accept` |
-| `button` | ボタン。`button_label`, `requires_streaming` |
-| `xy_input` | XY座標入力 |
-| `matrix3x3` | 3x3行列入力 |
+### 启用全局缓存后内存仍高
 
-##### ウィジェット例
+注册表只共享通过 `_get_cached_model` 加载的模型。未迁移的原始节点仍用各自的 `_model_cache`。迁移方法见[原始节点使用说明](#接入全局模型缓存重型模型推荐)。
 
-**ドロップダウン:**
-```toml
-[[properties]]
-name = "mode"
-display_name = "Mode"
-type = "string"
-default = "auto"
-widget = "dropdown"
-options = [
-    { value = "auto", label = "Auto" },
-    { value = "manual", label = "Manual" }
-]
-```
+---
 
-**ボタン:**
-```toml
-[[properties]]
-name = "reset"
-display_name = ""
-type = "bool"
-default = false
-widget = "button"
-button_label = "Reset"
-```
+## 许可证
 
-**条件付き表示:**
-```toml
-[[properties]]
-name = "custom_value"
-display_name = "Custom Value"
-type = "int"
-default = 100
-widget = "slider"
-visible_when = { property = "mode", values = ["manual"] }
-```
-
-**ファイル選択:**
-```toml
-[[properties]]
-name = "file_path"
-display_name = "File"
-type = "string"
-default = ""
-widget = "file_picker"
-accept = "image/*"
-```
-
-**GPU依存プロパティ:**
-```toml
-[[properties]]
-name = "use_gpu"
-display_name = "Use GPU"
-type = "bool"
-default = true
-widget = "checkbox"
-disabled_while_streaming = true
-requires_gpu = true
-```
-
-**実行中のみ有効なボタン:**
-```toml
-[[properties]]
-name = "capture"
-display_name = ""
-type = "bool"
-default = false
-widget = "button"
-button_label = "Capture"
-requires_streaming = true
-```
-
-</details>
-
-<details>
-<summary>実装（impl.py）</summary>
-
-##### 基本構成（Cannyノードの例）
-
-```python
-from typing import Dict, Any
-from node_editor.node_def import ComputeLogic
-import cv2
-
-
-class CannyNodeLogic(ComputeLogic):
-    """
-    Cannyエッジ検出を実行するノードロジック。
-    入力・出力ともにOpenCV画像（numpy配列）。Base64変換はcore.pyで自動処理。
-    """
-
-    def compute(
-        self,
-        inputs: Dict[str, Any],
-        properties: Dict[str, Any],
-        context: Dict[str, Any] = None,
-    ) -> Dict[str, Any]:
-        img = inputs.get("image")
-        if img is None:
-            return {"image": None}
-
-        low_threshold = int(properties.get("low_threshold", 50))
-        high_threshold = int(properties.get("high_threshold", 150))
-
-        # グレースケールに変換
-        if len(img.shape) == 2 or img.shape[2] == 1:
-            gray = img
-        else:
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-        edges = cv2.Canny(gray, low_threshold, high_threshold)
-
-        # 出力をBGRに変換（他ノードとの互換性のため）
-        edges_bgr = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
-
-        return {"image": edges_bgr}
-```
-
-**ポイント:**
-- クラス名は任意（`ComputeLogic`を継承）
-- `compute()`メソッドが必須
-- 入力は`inputs`辞書から取得（ポート名がキー）
-- プロパティは`properties`辞書から取得
-- 戻り値は出力ポート名をキーとした辞書
-
-##### コンテキスト情報
-
-`context` 引数には以下の情報が含まれます：
-
-| キー | 型 | 説明 |
-|------|---|------|
-| `is_streaming` | bool | START中かどうか |
-| `preview` | bool | プレビューモード（STOP状態）かどうか |
-| `loop` | bool | ループ再生が有効かどうか |
-| `interval_ms` | int | 実行間隔（ミリ秒） |
-| `node_id` | string | 現在のノードID |
-| `encode_base64` | bool | 画像をBase64エンコードするか |
-
-##### エラーハンドリングの例
-
-```python
-from typing import Dict, Any
-from node_editor.node_def import ComputeLogic
-
-try:
-    import cv2
-    CV2_AVAILABLE = True
-except ImportError:
-    CV2_AVAILABLE = False
-
-
-class BlurNodeLogic(ComputeLogic):
-    """ガウシアンブラーを適用"""
-
-    def compute(
-        self,
-        inputs: Dict[str, Any],
-        properties: Dict[str, Any],
-        context: Dict[str, Any] = None
-    ) -> Dict[str, Any]:
-        # 依存ライブラリのチェック
-        if not CV2_AVAILABLE:
-            return {"image": None, "__error__": "opencv-python is not installed"}
-
-        image = inputs.get("image")
-        if image is None:
-            return {"image": None}
-
-        kernel_size = int(properties.get("kernel_size", 5))
-
-        # カーネルサイズは奇数である必要がある
-        if kernel_size % 2 == 0:
-            kernel_size += 1
-
-        try:
-            blurred = cv2.GaussianBlur(image, (kernel_size, kernel_size), 0)
-            return {"image": blurred}
-        except Exception as e:
-            return {"image": None, "__error__": str(e)}
-```
-
-##### 特殊な出力キー
-
-| キー | 説明 |
-|------|------|
-| `__error__` | エラーメッセージ（ノードに赤く表示） |
-| `__is_busy__` | ビジー状態（trueでボタンを無効化） |
-| `__update_property__` | プロパティ値の更新（プロパティ名→値のdict） |
-| `__display_text__` | テキスト表示ノード用の表示テキスト |
-
-</details>
-
-# Author
-高橋かずひと(https://x.com/KzhtTkhs)
- 
-# License 
-Multimodal-Node-Editor is under [Apache-2.0 license](LICENSE).<br>
-Multimodal-Node-Editorのソースコード自体は[Apache-2.0 license](LICENSE)ですが、<br>
-各AIモデルのライセンスは、それぞれのライセンスに従います。
+本项目基于 [Multimodal-Node-Editor](https://github.com/102757017/Multimodal-Node-Editor)（MIT 许可证）构建。详见原始仓库的 `LICENSE`。
