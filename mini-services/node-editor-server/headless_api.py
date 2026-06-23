@@ -103,6 +103,33 @@ class HeadlessController:
         self.g = graph
         self._tasks: Dict[str, Dict[str, Any]] = {}
         self._tasks_lock = threading.Lock()
+        # Last execution result — stored so the browser UI can poll it and
+        # display outputs from external runs (HttpClient / SharedMemoryClient).
+        # Updated after every run() and after every async task completes.
+        self._last_result: Optional[Dict[str, Any]] = None
+        self._last_result_seq: int = 0  # monotonically increasing counter
+
+    def _store_last_result(self, result: Dict[str, Any]):
+        """Store the last execution result so the browser can poll it.
+
+        Called after every run() and after every async task completion.
+        Increments ``_last_result_seq`` so the browser can detect new results.
+        """
+        self._last_result_seq += 1
+        self._last_result = {
+            **result,
+            "seq": self._last_result_seq,
+            "timestamp": time.time(),
+        }
+
+    def get_last_result(self) -> Dict[str, Any]:
+        """Return the last execution result (for browser polling).
+
+        Returns ``{"seq": 0, "result": None}`` if no external run has happened yet.
+        """
+        if self._last_result is None:
+            return {"seq": 0, "result": None}
+        return {"seq": self._last_result_seq, "result": self._last_result}
 
     # -- helpers ---------------------------------------------------------
     @staticmethod
@@ -257,7 +284,7 @@ class HeadlessController:
             if val is not None:
                 output_value = _serialize_output(val, out_port.data_type)
 
-        return {
+        result_dict = {
             "status": last_result.status,
             "frame_id": last_result.frame_id,
             "executed_nodes": last_result.executed_nodes,
@@ -267,7 +294,18 @@ class HeadlessController:
             "elapsed_ms": last_result.elapsed_ms,
             "output": output_value,
             "output_port_data_type": out_port.data_type,
+            # Also include ALL node outputs (not just the requested one) so
+            # the browser UI can display previews for every node after an
+            # external run.  The browser's syncFromGraph reads from this
+            # "outputs" dict (keyed by "node_id.port_name").
+            "outputs": dict(last_result.outputs),
+            "node_times": dict(last_result.node_times),
         }
+
+        # Store as the last result so the browser can poll it.
+        self._store_last_result(result_dict)
+
+        return result_dict
 
     # -- synchronous run -------------------------------------------------
     def run(

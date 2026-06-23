@@ -153,4 +153,11 @@ export const api = {
     jpost<{ ok: boolean; snapshot: ModelRegistrySnapshot }>("/api/models/preload", {
       key, loader_name, loader_args, label, est_bytes,
     }),
+
+  // external integration — polling for results produced by an external
+  // Python script (HttpClient / SharedMemoryClient).  The browser polls
+  // getLastExternalResult() to detect when an external run has completed,
+  // then updates node previews to show the externally-produced outputs.
+  getLastExternalResult: () =>
+    jget<{ seq: number; result: ExecutionResult | null }>("/api/external/last-result"),
 };

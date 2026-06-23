@@ -712,6 +712,20 @@ def external_list_tasks():
     return {"tasks": _external_ctrl.list_tasks()}
 
 
+@app.get("/api/external/last-result")
+def external_last_result():
+    """Return the last external run's result (for browser UI polling).
+
+    The browser polls this endpoint to detect when an external Python script
+    has pushed an image and run the graph.  When a new result is detected
+    (``seq`` increments), the browser updates its node previews to show the
+    externally-produced outputs.
+
+    Returns ``{"seq": 0, "result": None}`` if no external run has happened.
+    """
+    return _external_ctrl.get_last_result()
+
+
 @app.get("/api/external/ping")
 def external_ping():
     """Health check — distinguishes the GUI backend from the headless backend.

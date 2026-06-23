@@ -60,6 +60,9 @@ function EditorInner() {
   const runningRef = useRef(false);
   // ref mirror of rfNodes positions so syncFromGraph doesn't depend on rfNodes
   const positionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
+  // tracks the last external run's seq number so we only update when a new
+  // external result arrives (avoids redundant re-renders)
+  const lastExternalSeqRef = useRef(0);
 
   const defMap = useMemo(() => {
     const m = new Map<string, NodeDefinition>();
@@ -159,6 +162,42 @@ function EditorInner() {
       }
     })();
   }, [refreshStatus]);
+
+  // ---- poll for external runs (HttpClient / SharedMemoryClient) -----------
+  // An external Python script can push images and run the graph via the
+  // /api/external/* endpoints.  The results are stored on the backend;
+  // this polling effect detects new results and updates the browser's `result`
+  // state so node previews (Image node, Display node, etc.) show the
+  // externally-produced outputs.
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const r = await api.getLastExternalResult();
+        if (cancelled) return;
+        if (r.result && r.seq > lastExternalSeqRef.current) {
+          lastExternalSeqRef.current = r.seq;
+          // Update the browser's result state — syncFromGraph (triggered by
+          // the result dependency) will re-render all nodes with the new
+          // output values, including image previews.
+          setResult(r.result);
+          // Also refresh the graph structure in case the external run
+          // modified any node state.
+          await refreshGraph();
+          await refreshStatus();
+        }
+      } catch {
+        // ignore — backend might be temporarily unavailable
+      }
+    };
+    // poll immediately, then every 1 second
+    poll();
+    const interval = setInterval(poll, 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [refreshGraph, refreshStatus]);
 
   // ---- sync rfNodes/rfEdges from backend graph -----------------------------
   const syncFromGraph = useCallback(
