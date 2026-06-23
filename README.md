@@ -1,6 +1,6 @@
-# 多模态节点编辑器（重构版）
+# 多模态节点编辑器
 
-基于 [Multimodal-Node-Editor](https://github.com/102757017/Multimodal-Node-Editor) 项目重构的可视化节点编辑器，类似 VisionMaster。核心执行引擎已**完全重写**，支持复杂的帧同步、跨层级数据访问、动态端口、分片执行和全局模型注册表。
+参考 [Multimodal-Node-Editor](https://github.com/102757017/Multimodal-Node-Editor) 项目重构的可视化节点编辑器，核心执行引擎已**完全重写**，支持复杂的帧同步、跨层级数据访问、动态端口、分片执行和全局模型注册表。
 
 ![Next.js](https://img.shields.io/badge/Next.js-16-black) ![Python](https://img.shields.io/badge/Python-3.10+-blue) ![ReactFlow](https://img.shields.io/badge/ReactFlow-12-cyan) ![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green)
 
@@ -48,9 +48,11 @@
 - LRU 淘汰（按数量和字节数）
 - 实时快照 API 供 UI 监控
 
-### 自动加载 131 个预设节点
+### 自动加载预设节点
 
-原始项目 `src/nodes/` 下的全部 124 个节点在启动时自动发现并注册（122 个有实际计算逻辑，2 个因缺少 `mediapipe` 等可选依赖而 stub）。另含 7 个内置演示节点。**新增节点只需把文件夹放入 `src/nodes/`，重启后端即可自动出现在面板中，无需改代码。**
+原始项目 `src/nodes/` 下的全部节点在启动时自动发现并注册
+
+**新增节点只需把文件夹放入 `src/nodes/`，重启后端即可自动出现在面板中，无需改代码。**
 
 ---
 
@@ -150,7 +152,7 @@ mini-services/node-editor-server/
 
 ### 第 4 步：确认前后端通信
 
-前端通过 Next.js rewrite 代理 `/api/*` 到后端 `http://localhost:3030`，**无需 Caddy 网关**。直接访问 `http://localhost:3000` 即可。如果你把后端跑在其他端口，设置环境变量 `BACKEND_URL` 后重启前端：
+前端通过 Next.js rewrite 代理 `/api/*` 到后端 `http://localhost:3030`，**无需 Caddy 网关**。直接访问 `http://localhost:3000` 即可。如果把后端跑在其他端口，设置环境变量 `BACKEND_URL` 后重启前端：
 
 ```bash
 # Windows PowerShell
@@ -203,7 +205,7 @@ python run_headless.py <graph.json> [选项]
 **示例：**
 
 ```bash
-# 列出所有 131 个可用节点
+# 列出所有可用节点
 python run_headless.py --list-nodes
 
 # 永久运行，用 cv2 窗口显示图像
@@ -243,7 +245,7 @@ python run_headless.py my_graph.json --count 5 --show-models
 ### 左侧面板——节点面板
 
 - 可折叠的分类树（IMAGE / AUDIO / MATH / TEXT / OPENAI / UTILITY / AI / SOURCE / DISPLAY）
-- 搜索框过滤全部 131 个节点
+- 搜索框过滤全部节点
 - 每个节点显示输入/输出端口类型色点和 `[src]`/`[dyn]`/`N/A` 徽章
 - 点击节点即添加到画布
 
@@ -259,6 +261,7 @@ python run_headless.py my_graph.json --count 5 --show-models
 ### 右侧面板——配置 / 模型 标签页
 
 **配置标签页**（选中节点时显示）：
+
 - 节点名称、触发模式（ALL/ANY）
 - 属性（数字 / 下拉 / 复选框 / 颜色 / 滑块 / 文件选择 / 文本域——与 node.toml schema 匹配）
 - **输入源**——每个输入端口的 ComboBox；列出所有拓扑上游的兼容输出端口。端口有连线时禁用。
@@ -654,11 +657,13 @@ pip install tomli
    如果连接失败，启动后端：`cd mini-services/node-editor-server && python -m uvicorn main:app --port 3030 --reload`
 
 2. **后端端口不是 3030** — 设置 `BACKEND_URL` 环境变量后重启前端：
+   
    ```bash
    # Windows PowerShell
    $env:BACKEND_URL="http://localhost:8000"; bun run dev
    ```
-
+```
+   
 3. **Next.js rewrite 未生效** — `next.config.ts` 中应有 `rewrites()` 把 `/api/*` 代理到后端。如果修改了 next.config.ts 需重启前端。
 
 ### 节点放进了 nodes/ 目录但面板里看不到
@@ -689,6 +694,4 @@ canvas 覆盖层需带 `nodrag` 类。如替换了组件，确保 `<canvas>` 及
 
 ---
 
-## 许可证
-
-本项目基于 [Multimodal-Node-Editor](https://github.com/102757017/Multimodal-Node-Editor)（MIT 许可证）构建。详见原始仓库的 `LICENSE`。
+```
