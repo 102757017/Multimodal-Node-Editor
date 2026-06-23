@@ -31,14 +31,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-# Make the mini-service importable when run from anywhere.
-# When this script lives in the project root, the backend is in
-# mini-services/node-editor-server/; when it lives in the backend dir itself,
-# SERVER_DIR is already correct.
+# Make the mini-service importable when run from anywhere
 SERVER_DIR = Path(__file__).resolve().parent
-if not (SERVER_DIR / "main.py").exists():
-    # we're in the project root — point at the backend
-    SERVER_DIR = SERVER_DIR / "mini-services" / "node-editor-server"
 sys.path.insert(0, str(SERVER_DIR))
 
 # Import the refactored engine + discovery (auto-registers all 131 nodes)
@@ -292,6 +286,35 @@ def run_streaming(
 
 
 # ---------------------------------------------------------------------------
+# External API: in-process + shared-memory transport
+# ---------------------------------------------------------------------------
+# The HeadlessController (in-process, zero-serialisation) and SharedMemoryServer
+# (cross-process, zero-copy image transfer via multiprocessing.shared_memory)
+# are implemented in headless_api.py.  We import them here so that
+# `from run_headless import HeadlessController` works.
+# ---------------------------------------------------------------------------
+from headless_api import HeadlessController, SharedMemoryServer, SharedMemoryClient  # noqa: F401
+
+
+def run_server(g: Graph, address: str = "/tmp/mne_headless.sock"):
+    """Start the shared-memory server on top of the loaded headless graph.
+
+    Image data is transferred via ``multiprocessing.shared_memory`` (zero-copy).
+    Only small control messages (node IDs, array shapes, dtypes) go through
+    a Unix domain socket / named pipe — no HTTP, no FastAPI, no base64
+    encoding of pixel data.
+
+    Args:
+        g: the loaded Graph.
+        address: socket path (Unix) or pipe name (Windows).
+                 Default: /tmp/mne_headless.sock
+    """
+    ctrl = HeadlessController(g)
+    server = SharedMemoryServer(ctrl, address=address)
+    server.start()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
@@ -325,6 +348,14 @@ Examples:
                         help="Frame-sync timeout in seconds (default 5.0)")
     parser.add_argument("--show-models", action="store_true",
                         help="Print the global model registry after each frame")
+    parser.add_argument("--server", action="store_true",
+                        help="Server mode: load the graph then start a shared-memory "
+                             "server. Lets an external Python client push images (via "
+                             "shared memory, zero-copy) and read outputs without running "
+                             "the browser UI or any HTTP/FastAPI server.")
+    parser.add_argument("--address", type=str, default="/tmp/mne_headless.sock",
+                        help="Socket path (Unix) or pipe name (Windows) for the "
+                             "shared-memory server (default: /tmp/mne_headless.sock)")
     args = parser.parse_args()
 
     if args.list_nodes:
@@ -354,6 +385,16 @@ Examples:
 
     terminal_keys = find_terminal_outputs(g)
     output_dir = Path(args.output_dir) if args.output_dir else None
+
+    if args.server:
+        # ----------------------------------------------------------------- #
+        # Server mode: start the shared-memory server.  No HTTP, no FastAPI,
+        # no base64 encoding of images.  Image data is transferred via
+        # multiprocessing.shared_memory (zero-copy).  Only small control
+        # messages go through a Unix domain socket / named pipe.
+        # ----------------------------------------------------------------- #
+        run_server(g, address=args.address)
+        return
 
     if args.stream:
         run_streaming(g, args.interval, terminal_keys, output_dir, args.no_display)

@@ -1,15 +1,34 @@
 """
-main.py - FastAPI server for the VisionMaster-like node editor.
+main.py - FastAPI server for the VisionMaster-like node editor (GUI backend).
 
 Exposes a REST API for graph manipulation, dynamic ports, cross-level
 ComboBox sources, source-data pushing, sharded execution, and save/load.
+
+In addition to the browser-UI endpoints, this server ALSO exposes the
+/api/external/* HTTP endpoints so that the Python client library
+(multimodal_client.HttpClient) can push images and read outputs while
+the GUI is running.  This lets you use the same Python client against:
+
+  - the GUI backend (this file, FastAPI on port 3030) — for development /
+    interactive use where you want to see the graph in the browser while
+    a script feeds it images.
+  - the headless backend (run_headless.py --server) — for production /
+    server deployments where no browser is needed.  The headless backend
+    uses shared-memory transport (zero-copy) which is more efficient, but
+    the HTTP API here is convenient when the GUI is already running.
+
+For maximum efficiency (zero-serialisation), import HeadlessController
+directly in-process — see headless_api.py.
 
 Run with:  python -m uvicorn main:app --host 0.0.0.0 --port 3030 --reload
 """
 from __future__ import annotations
 
+import base64
 import json
+import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -22,6 +41,11 @@ from core import ExecutionResult, Graph
 from models import Connection, Node, Port, generate_id
 from discovery import get_category_tree, StubCompute
 from model_registry import registry
+# HeadlessController provides the in-process implementation of the external
+# API (run / submit / get_result / etc.).  We wrap its methods in HTTP
+# endpoints below so the Python HttpClient client can talk to the GUI
+# backend the same way it talks to the headless backend.
+from headless_api import HeadlessController
 
 app = FastAPI(title="Multimodal Node Editor (refactored)")
 app.add_middleware(
@@ -218,6 +242,38 @@ def set_position(node_id: str, req: SetPositionReq):
         raise HTTPException(status_code=404, detail="Node not found")
     node.position = {"x": float(req.position.get("x", 0)), "y": float(req.position.get("y", 0))}
     return {"ok": True}
+
+
+class AutoLayoutReq(BaseModel):
+    """Optional parameters for the auto-layout algorithm."""
+    direction: str = "LR"  # "LR" (left-to-right) or "TB" (top-to-bottom)
+    node_width: int = 220
+    node_height: int = 120
+    layer_gap: int = 80
+    node_gap: int = 40
+
+
+@app.post("/api/graph/auto-layout")
+def auto_layout(req: AutoLayoutReq):
+    """Auto-arrange all nodes using a layered (Sugiyama-style) layout.
+
+    Computes new positions based on the connection graph's topology and
+    applies them to every node.  Returns the new positions keyed by node id
+    so the client can update its local state.
+    """
+    positions = graph.compute_auto_layout(
+        direction=req.direction,
+        node_width=req.node_width,
+        node_height=req.node_height,
+        layer_gap=req.layer_gap,
+        node_gap=req.node_gap,
+    )
+    # persist positions on the backend nodes
+    for nid, pos in positions.items():
+        node = graph._find_node(nid)
+        if node:
+            node.position = {"x": float(pos["x"]), "y": float(pos["y"])}
+    return {"ok": True, "positions": positions}
 
 
 @app.put("/api/graph/nodes/{node_id}/input-source")
@@ -521,3 +577,147 @@ async def upload_file(file: UploadFile = FileParam(...)):
 @app.get("/")
 def root():
     return {"name": "node-editor-server", "status": "ok"}
+
+
+# ===========================================================================
+# External integration API (HTTP)
+#
+# These endpoints let an external Python process (or any HTTP client) push an
+# image into a designated Image node, run the graph for one frame, and read
+# back the output of any node — while the GUI is running.
+#
+# The same Python client (multimodal_client.HttpClient) works against:
+#   - this GUI backend (FastAPI on port 3030)
+#   - the headless backend (run_headless.py --server, shared-memory transport)
+#
+# All logic is delegated to HeadlessController (from headless_api.py) so there
+# is a single implementation shared between the in-process, shared-memory and
+# HTTP transports.
+#
+# Two execution modes:
+#   * Synchronous:  POST /api/external/run          (blocks until the frame
+#                   finishes and returns the requested output)
+#   * Asynchronous: POST /api/external/submit       (returns a task_id
+#                   immediately) + GET /api/external/result/{task_id}
+#                   (poll for completion / output)
+# ===========================================================================
+
+# A HeadlessController wrapping the global graph.  All /api/external/*
+# endpoints delegate to this controller so the logic stays in one place.
+_external_ctrl = HeadlessController(graph)
+
+
+class ExternalRunReq(BaseModel):
+    """Push an image into an Image node and run one frame."""
+    image_node_id: str
+    image_port_name: str = "image_out"
+    # image can be supplied as:
+    #   - a base64 data URI ("data:image/jpeg;base64,...")
+    #   - raw base64 (we'll wrap it as jpeg)
+    #   - a file path on the server (if image_path is set instead)
+    image_base64: Optional[str] = None
+    image_path: Optional[str] = None
+    output_node_id: str
+    output_port_name: str
+    max_steps: int = 50
+    reset_frame: bool = True
+
+
+class ExternalSubmitReq(ExternalRunReq):
+    """Same shape as ExternalRunReq but returns immediately with a task id."""
+    pass
+
+
+def _external_error_to_http(e: Exception):
+    """Translate controller exceptions to HTTPException with appropriate codes."""
+    if isinstance(e, (ValueError, FileNotFoundError, TypeError)):
+        return HTTPException(status_code=400, detail=str(e))
+    if isinstance(e, KeyError):
+        return HTTPException(status_code=404, detail=str(e))
+    if isinstance(e, TimeoutError):
+        return HTTPException(status_code=504, detail=str(e))
+    return HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/external/graph-info")
+def external_graph_info():
+    """Return a compact summary of the loaded graph so external clients can
+    discover node ids, port names, and data types without parsing the full
+    graph dump."""
+    return _external_ctrl.graph_info()
+
+
+@app.post("/api/external/run")
+def external_run(req: ExternalRunReq):
+    """Synchronous: push image, run one frame, return the requested output."""
+    try:
+        result = _external_ctrl.run(
+            image_node_id=req.image_node_id,
+            image_port_name=req.image_port_name,
+            image_base64=req.image_base64,
+            image_path=req.image_path,
+            output_node_id=req.output_node_id,
+            output_port_name=req.output_port_name,
+            max_steps=req.max_steps,
+            reset_frame=req.reset_frame,
+        )
+        return result
+    except Exception as e:
+        raise _external_error_to_http(e)
+
+
+@app.post("/api/external/submit")
+def external_submit(req: ExternalSubmitReq):
+    """Asynchronous: queue a run and return a task_id immediately.
+
+    Poll the result with GET /api/external/result/{task_id}.
+    """
+    try:
+        task_id = _external_ctrl.submit(
+            image_node_id=req.image_node_id,
+            image_port_name=req.image_port_name,
+            image_base64=req.image_base64,
+            image_path=req.image_path,
+            output_node_id=req.output_node_id,
+            output_port_name=req.output_port_name,
+            max_steps=req.max_steps,
+            reset_frame=req.reset_frame,
+        )
+        return {"task_id": task_id, "status": "pending"}
+    except Exception as e:
+        raise _external_error_to_http(e)
+
+
+@app.get("/api/external/result/{task_id}")
+def external_result(task_id: str):
+    """Poll the status / output of an asynchronously submitted run."""
+    try:
+        return _external_ctrl.get_result(task_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.delete("/api/external/result/{task_id}")
+def external_cancel(task_id: str):
+    """Delete a task from the in-memory store (best-effort cleanup)."""
+    ok = _external_ctrl.cancel_task(task_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
+    return {"ok": True}
+
+
+@app.get("/api/external/tasks")
+def external_list_tasks():
+    """List all known async tasks (most recent first)."""
+    return {"tasks": _external_ctrl.list_tasks()}
+
+
+@app.get("/api/external/ping")
+def external_ping():
+    """Health check — distinguishes the GUI backend from the headless backend.
+
+    Returns ``{"ok": true, "mode": "gui-http"}`` for the GUI backend.
+    The headless shared-memory server returns ``{"mode": "headless-shm"}``.
+    """
+    return {"ok": True, "mode": "gui-http"}
+

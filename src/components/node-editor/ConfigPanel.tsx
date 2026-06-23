@@ -5,7 +5,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Select,
   SelectContent,
@@ -140,7 +139,10 @@ export function ConfigPanel({
   }
 
   return (
-    <ScrollArea className="h-full overflow-x-hidden">
+    <div
+      className="h-full overflow-y-auto overflow-x-hidden"
+      style={{ userSelect: "text", WebkitUserSelect: "text" }}
+    >
       <div className="p-4 space-y-5 w-full max-w-full overflow-x-hidden box-border">
         {/* header */}
         <div className="space-y-2">
@@ -333,7 +335,7 @@ export function ConfigPanel({
           </Button>
         </div>
       </div>
-    </ScrollArea>
+    </div>
   );
 }
 
@@ -351,7 +353,7 @@ function PropertyField({
   value: unknown;
   disabled: boolean;
   onChange: (v: unknown) => void;
-  onCommit?: (v: unknown) => void;
+  onCommit?: (v: unknown) => void | Promise<void>;
 }) {
   // coerce initial value
   const v = value === undefined || value === null ? def.default : value;
@@ -468,6 +470,7 @@ function PropertyField({
         value={v}
         disabled={disabled}
         onChange={onChange}
+        onCommit={onCommit}
       />
     );
   }
@@ -526,11 +529,13 @@ function FilePickerField({
   value,
   disabled,
   onChange,
+  onCommit,
 }: {
   def: NodeDefinition["properties"][number];
   value: unknown;
   disabled: boolean;
   onChange: (v: unknown) => void;
+  onCommit?: (v: unknown) => void | Promise<void>;
 }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
@@ -560,6 +565,13 @@ function FilePickerField({
     try {
       const r = await api.uploadFile(file, (pct) => setProgress(pct));
       onChange(r.path);
+      // Persist the file_path to the backend immediately so that the
+      // node's compute() can read the file when the user clicks Run.
+      // Without this, the path only lives in localProps (frontend state)
+      // and the backend never receives it — the Image node returns None.
+      // We AWAIT onCommit to guarantee the backend has the path before
+      // the upload spinner disappears and the user can click Run.
+      if (onCommit) await onCommit(r.path);
       if (r.first_frame) setPreview(r.first_frame);
     } catch (err) {
       if (err instanceof Error && err.message !== "Upload cancelled") {

@@ -727,6 +727,133 @@ class Graph:
         return all(self.exec_state.source_depleted.get(n.id, False) for n in sources)
 
     # ------------------------------------------------------------------ #
+    # Auto-layout (layered / Sugiyama-style)
+    # ------------------------------------------------------------------ #
+    def compute_auto_layout(
+        self,
+        direction: str = "LR",
+        node_width: int = 220,
+        node_height: int = 120,
+        layer_gap: int = 80,
+        node_gap: int = 40,
+    ) -> Dict[str, Dict[str, float]]:
+        """Compute new positions for all nodes using a layered layout.
+
+        Implements a simplified Sugiyama-style algorithm:
+          1. Cycle-aware topological layering (longest-path from any source).
+             Self-loops and back-edges are ignored for layout purposes.
+          2. Brandes-Kösch median-based crossing reduction (a few iterations).
+          3. Coordinate assignment: layers along the primary axis, nodes within
+             a layer stacked along the secondary axis, centered around 0.
+
+        Returns ``{node_id: {"x": float, "y": float}}``.  The caller is
+        responsible for persisting these positions on the Node instances.
+        """
+        self._ensure_topology()
+        if not self.nodes:
+            return {}
+
+        node_ids = [n.id for n in self.nodes]
+        id_set = set(node_ids)
+
+        # Build forward adjacency list (only edges that don't form cycles
+        # for layout purposes).  We skip self-loops and edges that go from
+        # a higher topo-order node to a lower one (back-edges).
+        topo_idx = self._topo_index
+        forward: Dict[str, List[str]] = {nid: [] for nid in node_ids}
+        in_degree: Dict[str, int] = {nid: 0 for nid in node_ids}
+        for c in self.connections:
+            if c.from_node_id == c.to_node_id:
+                continue  # self-loop
+            if c.from_node_id not in id_set or c.to_node_id not in id_set:
+                continue
+            # ignore back-edges (would create cycle in DAG layout)
+            if topo_idx.get(c.from_node_id, 0) > topo_idx.get(c.to_node_id, 0):
+                continue
+            forward[c.from_node_id].append(c.to_node_id)
+            in_degree[c.to_node_id] += 1
+
+        # 1. Layer assignment via longest path from any source.
+        layers: Dict[str, int] = {}
+
+        def longest_path(nid: str, visiting: Set[str]) -> int:
+            if nid in layers:
+                return layers[nid]
+            if nid in visiting:
+                return 0  # safety against any residual cycle
+            visiting.add(nid)
+            children = forward.get(nid, [])
+            if not children:
+                layer = 0
+            else:
+                layer = 1 + max(longest_path(c, visiting) for c in children)
+            layers[nid] = layer
+            visiting.discard(nid)
+            return layer
+
+        for nid in node_ids:
+            if in_degree[nid] == 0:
+                longest_path(nid, set())
+        # Any nodes not reached (e.g. inside cycles) get placed at layer 0.
+        for nid in node_ids:
+            if nid not in layers:
+                longest_path(nid, set())
+
+        # Group nodes by layer
+        max_layer = max(layers.values()) if layers else 0
+        nodes_in_layer: List[List[str]] = [[] for _ in range(max_layer + 1)]
+        for nid, layer in layers.items():
+            nodes_in_layer[layer].append(nid)
+
+        # 2. Crossing reduction (Brandes-Kösch median heuristic).
+        # Initialise order within each layer by node insertion order.
+        order_in_layer: List[List[str]] = [list(lst) for lst in nodes_in_layer]
+        for _ in range(8):  # a few sweeps
+            # downward sweep
+            for li in range(1, len(order_in_layer)):
+                current = order_in_layer[li]
+                # compute median of upstream positions
+                pos_in_prev: Dict[str, float] = {nid: i for i, nid in enumerate(order_in_layer[li - 1])}
+                def median(nid: str) -> float:
+                    ups = [c for c in self.connections if c.to_node_id == nid and c.from_node_id in pos_in_prev]
+                    if not ups:
+                        return float("inf")
+                    poses = sorted(pos_in_prev[c.from_node_id] for c in ups)
+                    n = len(poses)
+                    return poses[n // 2] if n % 2 == 1 else (poses[n // 2 - 1] + poses[n // 2]) / 2.0
+                current.sort(key=lambda nid: (median(nid), nid))
+                order_in_layer[li] = current
+            # upward sweep
+            for li in range(len(order_in_layer) - 2, -1, -1):
+                current = order_in_layer[li]
+                pos_in_next: Dict[str, float] = {nid: i for i, nid in enumerate(order_in_layer[li + 1])}
+                def median_up(nid: str) -> float:
+                    downs = [c for c in self.connections if c.from_node_id == nid and c.to_node_id in pos_in_next]
+                    if not downs:
+                        return float("inf")
+                    poses = sorted(pos_in_next[c.to_node_id] for c in downs)
+                    n = len(poses)
+                    return poses[n // 2] if n % 2 == 1 else (poses[n // 2 - 1] + poses[n // 2]) / 2.0
+                current.sort(key=lambda nid: (median_up(nid), nid))
+                order_in_layer[li] = current
+
+        # 3. Coordinate assignment.
+        # Primary axis = layer index, secondary axis = position within layer.
+        positions: Dict[str, Dict[str, float]] = {}
+        for li, layer_nodes in enumerate(order_in_layer):
+            total_h = len(layer_nodes) * node_height + max(0, len(layer_nodes) - 1) * node_gap
+            start_y = -total_h / 2.0
+            for i, nid in enumerate(layer_nodes):
+                if direction == "LR":
+                    x = li * (node_width + layer_gap)
+                    y = start_y + i * (node_height + node_gap)
+                else:  # TB
+                    y = li * (node_height + layer_gap)
+                    x = start_y + i * (node_width + node_gap)
+                positions[nid] = {"x": float(x), "y": float(y)}
+        return positions
+
+    # ------------------------------------------------------------------ #
     # Helpers
     # ------------------------------------------------------------------ #
     def _find_node(self, node_id: str) -> Optional[Node]:

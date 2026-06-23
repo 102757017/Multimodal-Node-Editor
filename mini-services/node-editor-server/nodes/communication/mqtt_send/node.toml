@@ -1,0 +1,89 @@
+name = "communication.mqtt_send"
+version = "1.0.0"
+display_name = "MQTT Send"
+description = "Publishes the input payload to an MQTT topic. The topic can be set via property or supplied via the 'topic' input port (input overrides property)."
+order = 20
+
+[[ports]]
+name = "payload"
+data_type = "any"
+direction = "in"
+
+[[ports]]
+name = "topic"
+data_type = "string"
+direction = "in"
+
+[[ports]]
+name = "sent"
+data_type = "bool"
+direction = "out"
+
+[[ports]]
+name = "error"
+data_type = "string"
+direction = "out"
+
+[[properties]]
+name = "broker_host"
+display_name = "Broker Host"
+type = "string"
+default = "localhost"
+widget = "input"
+
+[[properties]]
+name = "broker_port"
+display_name = "Broker Port"
+type = "int"
+default = 1883
+widget = "number_input"
+min = 1
+max = 65535
+step = 1
+
+[[properties]]
+name = "topic"
+display_name = "Topic (used when 'topic' input port is unconnected)"
+type = "string"
+default = "test/out"
+widget = "input"
+
+[[properties]]
+name = "username"
+display_name = "Username (optional)"
+type = "string"
+default = ""
+widget = "input"
+
+[[properties]]
+name = "password"
+display_name = "Password (optional)"
+type = "string"
+default = ""
+widget = "input"
+
+[[properties]]
+name = "qos"
+display_name = "QoS"
+type = "int"
+default = 0
+widget = "dropdown"
+options = [
+    { value = 0, label = "0 - At most once" },
+    { value = 1, label = "1 - At least once" },
+    { value = 2, label = "2 - Exactly once" },
+]
+
+[[properties]]
+name = "retain"
+display_name = "Retain"
+type = "bool"
+default = false
+widget = "checkbox"
+
+[[properties]]
+name = "client_id_prefix"
+display_name = "Client ID Prefix"
+type = "string"
+default = "mne_send_"
+widget = "input"

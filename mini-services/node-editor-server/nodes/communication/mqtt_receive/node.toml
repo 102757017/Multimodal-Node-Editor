@@ -1,0 +1,83 @@
+name = "communication.mqtt_receive"
+version = "1.0.0"
+display_name = "MQTT Receive"
+description = "Subscribe to an MQTT topic (supports + and # wildcards). Caches the last received payload and outputs it every frame. A 'new' flag indicates whether the cache was updated since the last compute call."
+order = 10
+is_source_node = true
+
+[[ports]]
+name = "payload"
+data_type = "string"
+direction = "out"
+
+[[ports]]
+name = "topic"
+data_type = "string"
+direction = "out"
+
+[[ports]]
+name = "new"
+data_type = "bool"
+direction = "out"
+
+[[ports]]
+name = "timestamp"
+data_type = "float"
+direction = "out"
+
+[[properties]]
+name = "broker_host"
+display_name = "Broker Host"
+type = "string"
+default = "localhost"
+widget = "input"
+
+[[properties]]
+name = "broker_port"
+display_name = "Broker Port"
+type = "int"
+default = 1883
+widget = "number_input"
+min = 1
+max = 65535
+step = 1
+
+[[properties]]
+name = "topic"
+display_name = "Topic (supports + and # wildcards)"
+type = "string"
+default = "test/#"
+widget = "input"
+
+[[properties]]
+name = "username"
+display_name = "Username (optional)"
+type = "string"
+default = ""
+widget = "input"
+
+[[properties]]
+name = "password"
+display_name = "Password (optional)"
+type = "string"
+default = ""
+widget = "input"
+
+[[properties]]
+name = "qos"
+display_name = "QoS"
+type = "int"
+default = 0
+widget = "dropdown"
+options = [
+    { value = 0, label = "0 - At most once" },
+    { value = 1, label = "1 - At least once" },
+    { value = 2, label = "2 - Exactly once" },
+]
+
+[[properties]]
+name = "client_id_prefix"
+display_name = "Client ID Prefix"
+type = "string"
+default = "mne_recv_"
+widget = "input"

@@ -38,7 +38,7 @@ import type {
 import { typeColor } from "@/lib/node-editor/types";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Play, Square, SkipForward, RotateCcw, Save, FolderOpen, Activity } from "lucide-react";
+import { Play, Square, SkipForward, RotateCcw, Save, FolderOpen, Activity, LayoutGrid } from "lucide-react";
 
 const nodeTypes = { custom: CustomNode };
 
@@ -402,6 +402,21 @@ function EditorInner() {
     await refreshStatus();
   }, [refreshGraph, refreshStatus]);
 
+  const handleAutoLayout = useCallback(async () => {
+    try {
+      const r = await api.autoLayout({ direction: "LR" });
+      // Update cached positions so syncFromGraph doesn't override them
+      const m = new Map<string, { x: number; y: number }>();
+      for (const [id, pos] of Object.entries(r.positions)) {
+        m.set(id, { x: pos.x, y: pos.y });
+      }
+      positionsRef.current = m;
+      await refreshGraph();
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [refreshGraph]);
+
   const handleRun = useCallback(async () => {
     setRunning(true);
     runningRef.current = true;
@@ -612,6 +627,9 @@ function EditorInner() {
           <Button size="sm" variant="ghost" className="h-8 gap-1.5" onClick={handleReset} disabled={running}>
             <RotateCcw className="w-3.5 h-3.5" /> Reset
           </Button>
+          <Button size="sm" variant="ghost" className="h-8 gap-1.5" onClick={handleAutoLayout} disabled={running} title="Auto-arrange all nodes in a layered layout">
+            <LayoutGrid className="w-3.5 h-3.5" /> Auto Layout
+          </Button>
         </div>
         <div className="h-6 w-px bg-zinc-800 mx-1" />
         {/* save/load */}
@@ -671,9 +689,15 @@ function EditorInner() {
                 const d = (n.data as unknown as CustomNodeData) || null;
                 const cat = d?.category;
                 const colors: Record<string, string> = {
-                  source: "#22c55e", math: "#3b82f6", image: "#ec4899", display: "#a855f7", general: "#64748b",
+                  source: "#22c55e", math: "#3b82f6", image: "#ec4899",
+                  display: "#a855f7", general: "#64748b",
+                  communication: "#f59e0b", utility: "#14b8a6",
+                  audio: "#06b6d4", text: "#eab308", openai: "#10b981",
+                  ai: "#8b5cf6",
                 };
-                return colors[cat || "general"] || "#64748b";
+                // also handle dotted category ids like "image.input" -> "image"
+                const top = cat ? cat.split(".")[0] : "general";
+                return colors[cat || "general"] || colors[top] || "#64748b";
               }}
             />
           </ReactFlow>

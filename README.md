@@ -2,7 +2,21 @@
 
 参考 [Multimodal-Node-Editor](https://github.com/102757017/Multimodal-Node-Editor) 项目重构的可视化节点编辑器，核心执行引擎已**完全重写**，支持复杂的帧同步、跨层级数据访问、动态端口、分片执行和全局模型注册表。
 
+本次重构新增：**Auto Layout 自动布局**、**MQTT 通信节点组**、**外部 Python 客户端（同步/异步）**、**无头服务器模式**、**修复 Config 面板文本选择 bug**。
+
 ![Next.js](https://img.shields.io/badge/Next.js-16-black) ![Python](https://img.shields.io/badge/Python-3.10+-blue) ![ReactFlow](https://img.shields.io/badge/ReactFlow-12-cyan) ![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green)
+
+---
+
+## 本次更新摘要
+
+| 功能 | 说明 |
+|---|---|
+| **Auto Layout 按钮** | 顶栏新增「Auto Layout」按钮，点击后基于拓扑排序和 Brandes-Kösch 交叉减少算法自动排列所有节点。后端 `POST /api/graph/auto-layout` 端点。 |
+| **MQTT 通信节点组** | 新增 `communication` 分类，含 `MQTT Receive` 和 `MQTT Send` 两个节点。基于 `paho-mqtt`，支持 `+` / `#` 通配符订阅、缓存最后一条消息、每帧输出缓存 payload、`new` 标志位指示是否收到新消息。 |
+| **外部 Python 客户端** | `clients/python/multimodal_client.py` 提供同步（`urllib`）和异步（`aiohttp`）两种客户端，支持向指定 Image 节点推送图片、运行一帧并取回任意节点的输出。 |
+| **无头服务器模式** | `run_headless.py graph.json --server` 在无 UI 的环境下启动 FastAPI 服务，暴露与 GUI 后端相同的 `/api/external/*` 端点。外部客户端无需区分对接的是 GUI 后端还是无头后端。 |
+| **Config 文本选择 bug 修复** | 替换 Radix `ScrollArea` 为原生 `overflow-y-auto` div，并添加全局 CSS 规则强制 input/textarea 文本可选。 |
 
 ---
 
@@ -237,6 +251,7 @@ python run_headless.py my_graph.json --count 5 --show-models
 | **Run** | 流式模式：反复"开始新帧 + 执行"直到源节点耗尽 |
 | **Step Frame** | 执行一帧（start_frame → execute_step 至 frame_complete） |
 | **Reset** | 清除所有执行状态 |
+| **Auto Layout** | 基于拓扑分层（Sugiyama-style）自动排列所有节点；点击后所有节点位置被覆盖 |
 | **Save** | 将当前图保存为 `saves/graph-<时间戳>.json` |
 | **Load** | 重新加载上次保存的图 |
 
@@ -278,6 +293,343 @@ python run_headless.py my_graph.json --count 5 --show-models
 - 工具栏：画笔 / 橡皮擦 / 清除
 - 笔画持久化到后端 `draw_commands` 属性
 - 即使未连接图像也可绘制（在黑色画布上画）
+
+---
+
+## Auto Layout 自动布局
+
+顶栏新增 **Auto Layout** 按钮，点击后所有节点会按拓扑分层自动重排。
+
+### 算法
+
+1. **拓扑分层**：基于最长路径算法，每个节点的层数 = `max(上游节点层数) + 1`。源节点在第 0 层。自环和反向边被忽略。
+2. **交叉减少**：使用 Brandes-Kösch 中位数启发式算法，交替进行「自上而下」和「自下而上」扫描，根据上游/下游节点位置的中位数对当前层节点排序。共 8 次扫描。
+3. **坐标分配**：层数映射为 x 坐标（LR 模式）或 y 坐标（TB 模式），同层节点按排序顺序在垂直方向居中堆叠。
+
+### API
+
+```http
+POST /api/graph/auto-layout
+Content-Type: application/json
+
+{
+  "direction": "LR",        // "LR" 左到右, "TB" 上到下
+  "node_width": 220,
+  "node_height": 120,
+  "layer_gap": 80,
+  "node_gap": 40
+}
+```
+
+返回：
+
+```json
+{
+  "ok": true,
+  "positions": {
+    "node-abc12345": {"x": 0, "y": -60},
+    "node-def67890": {"x": 300, "y": -60}
+  }
+}
+```
+
+---
+
+## MQTT 通信节点组
+
+新增 `communication` 分类，包含两个基于 `paho-mqtt` 的节点。安装依赖：
+
+```bash
+pip install paho-mqtt
+```
+
+### MQTT Receive（`communication.mqtt_receive`）
+
+订阅 MQTT 主题（支持 `+` 单层通配符和 `#` 多层通配符），缓存最后一条消息。
+
+**行为说明：**
+
+| 时机 | 行为 |
+|---|---|
+| 收到新消息 | 后台线程更新缓存（payload、topic、timestamp），置 `new = True` |
+| `compute()` 被调用 | 输出当前缓存值；若 `new` 为 True，本次输出后置 `new = False` |
+| 没有新消息 | 仍然输出上一条缓存的 payload（缓存不清空） |
+| 从未收到消息 | `payload` 为空字符串，`new` 为 `False` |
+
+**输出端口：**
+
+| 端口 | 类型 | 说明 |
+|---|---|---|
+| `payload` | string | 最后一条消息的 payload（UTF-8 解码） |
+| `topic` | string | 实际接收到的 topic（对于通配符订阅，是消息的真实 topic） |
+| `new` | bool | 是否收到了新消息（仅在收到新消息后的下一帧为 True） |
+| `timestamp` | float | 收到消息的 Unix 时间戳（秒） |
+
+**属性：**
+
+| 属性 | 默认值 | 说明 |
+|---|---|---|
+| `broker_host` | `localhost` | MQTT broker 主机 |
+| `broker_port` | `1883` | MQTT broker 端口 |
+| `topic` | `test/#` | 订阅主题，支持 `+` / `#` 通配符 |
+| `username` | （空） | 可选用户名 |
+| `password` | （空） | 可选密码 |
+| `qos` | `0` | QoS 级别（0/1/2） |
+| `client_id_prefix` | `mne_recv_` | 客户端 ID 前缀（自动附加随机后缀） |
+
+### MQTT Send（`communication.mqtt_send`）
+
+将输入端口收到的 payload 发布到指定 topic。
+
+**输入端口：**
+
+| 端口 | 类型 | 说明 |
+|---|---|---|
+| `payload` | any | 要发布的 payload（字符串/字节直接发送，其他类型 `str()` 后发送） |
+| `topic` | string | 可选；连接后覆盖属性中的 `topic` |
+
+**输出端口：**
+
+| 端口 | 类型 | 说明 |
+|---|---|---|
+| `sent` | bool | 是否成功调用 `client.publish()` |
+| `error` | string | 错误信息（成功时为空字符串） |
+
+**属性：** 同 `mqtt_receive`（broker、credentials、qos 等），外加：
+
+| 属性 | 默认值 | 说明 |
+|---|---|---|
+| `topic` | `test/out` | 默认发布 topic（当 `topic` 输入端口未连接时使用） |
+| `retain` | `false` | 是否设置 retain 标志 |
+
+### 示例：双向通信
+
+```
+[MQTT Receive: test/sensor/#]  →  payload  →  [处理节点]  →  [MQTT Send: test/processed]
+```
+
+---
+
+## 外部 Python 客户端
+
+`clients/python/multimodal_client.py` 提供独立的 Python 客户端库，让外部进程能够向计算图中指定的 Image 节点推送图片，并取回任意节点的输出。
+
+### 三种传输方式（同时支持 GUI 后端和无头后端）
+
+| 传输方式 | 类名 | 图片传输 | 适用场景 |
+|---------|------|---------|---------|
+| **HTTP** | `HttpClient` | Base64 编码 | **GUI 后端**（`python run_gui.py`）运行时，脚本通过 HTTP 推送图片，可在浏览器中观察图执行 |
+| **共享内存** | `SharedMemoryClient` | 共享内存（零拷贝） | **无头后端**（`python run_headless.py graph.json --server`），跨进程零拷贝 |
+| **进程内** | `DirectClient` | numpy 引用传递 | 脚本将后端作为库导入（Jupyter、插件），零开销 |
+
+**同一个 Python 客户端 API** 适用于三种传输方式——只需选择匹配后端的传输方式即可。
+
+详细使用说明见 [`clients/python/README.md`](clients/python/README.md)。
+
+### 示例 1：GUI 后端运行时（HTTP）
+
+```bash
+# 终端 1：启动 GUI 后端
+python run_gui.py
+# → FastAPI 在 http://localhost:3030，浏览器打开 http://localhost:3000
+```
+
+```python
+# 终端 2：从脚本推送图片
+from multimodal_client import HttpClient
+import cv2
+
+client = HttpClient("http://localhost:3030")
+
+# 检测后端模式
+print(client.ping())  # {'ok': True, 'mode': 'gui-http'}
+
+info = client.graph_info()
+img_node = info.find_node_by_name("Image")
+
+# 推送图片——HTTP 传输，base64 编码
+image = cv2.imread("photo.jpg")
+result = client.run(
+    image_node_id=img_node.id,
+    image_array=image,
+    output_node_id=img_node.id,
+    output_port_name="image_out",
+)
+
+# result.output 是 base64 data URI（用 result.decode_image() 解码为 numpy）
+output = result.decode_image()
+cv2.imwrite("output.jpg", output)
+```
+
+### 示例 2：无头后端（共享内存，零拷贝）
+
+```bash
+# 终端 1：启动无头服务器
+python run_headless.py my_graph.json --server
+# → Shared-memory server listening on: /tmp/mne_headless.sock
+```
+
+```python
+# 终端 2：从独立进程连接
+from multimodal_client import SharedMemoryClient
+import cv2
+
+client = SharedMemoryClient("/tmp/mne_headless.sock")
+
+info = client.graph_info()
+img_node = info.find_node_by_name("Image")
+
+# 推送 numpy 数组——共享内存传输，零拷贝
+image = cv2.imread("photo.jpg")
+result = client.run(
+    image_node_id=img_node.id,
+    image_array=image,          # 零拷贝
+    output_node_id=img_node.id,
+    output_port_name="image_out",
+)
+
+# result.output 是原始 numpy 数组（无 base64 解码）
+cv2.imwrite("output.jpg", result.output)
+```
+
+### 示例 3：进程内（零开销）
+
+```python
+from multimodal_client import DirectClient
+import cv2
+
+# 将后端作为库导入——numpy 数组按引用传递
+client = DirectClient(
+    backend_dir="/path/to/mini-services/node-editor-server",
+    graph_path="my_graph.json",
+)
+
+info = client.graph_info()
+img_node = info.find_node_by_name("Image")
+
+image = cv2.imread("photo.jpg")
+result = client.run(
+    image_node_id=img_node.id,
+    image_array=image,          # numpy 引用传递，零开销
+    output_node_id=img_node.id,
+    output_port_name="image_out",
+)
+```
+
+### 异步使用（submit + poll）
+
+所有三种传输方式都支持异步提交：
+
+```python
+from multimodal_client import HttpClient
+
+client = HttpClient("http://localhost:3030")
+
+# 提交（立即返回 task_id）
+task_id = client.submit(
+    image_node_id="node-abc12345",
+    image_array=cv2.imread("image1.jpg"),
+    output_node_id="node-def67890",
+    output_port_name="result",
+)
+
+# ... 做其他工作 ...
+
+# 等待结果（阻塞直到完成或超时）
+result = client.wait_for_result(task_id, timeout=60.0)
+print(result)
+```
+
+### 命令行工具
+
+```bash
+# 健康检查 + 检测后端模式（GUI vs 无头）
+python -m multimodal_client ping --transport http --base-url http://localhost:3030
+# → Backend: reachable
+#   mode: gui-http
+
+python -m multimodal_client ping --transport shm --address /tmp/mne_headless.sock
+# → Backend: reachable
+#   mode: headless-shm
+
+# 查看图中所有节点（GUI 后端，HTTP）
+python -m multimodal_client info --transport http --base-url http://localhost:3030
+
+# 同步运行（GUI 后端，HTTP）
+python -m multimodal_client run \
+    --transport http \
+    --base-url http://localhost:3030 \
+    --image-node node-abc12345 \
+    --image /path/to/image.jpg \
+    --output-node node-def67890 \
+    --output-port result \
+    --save output.jpg
+
+# 同步运行（无头后端，共享内存——最高效）
+python -m multimodal_client run \
+    --transport shm \
+    --address /tmp/mne_headless.sock \
+    --image-node node-abc12345 \
+    --image /path/to/image.jpg \
+    --output-node node-def67890 \
+    --output-port result \
+    --save output.jpg
+```
+
+### 外部 API 端点参考（GUI 后端 HTTP）
+
+GUI 后端（`main.py`，FastAPI 端口 3030）暴露以下端点供 `HttpClient` 使用：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/external/ping` | 健康检查，返回 `{"ok": true, "mode": "gui-http"}` |
+| GET | `/api/external/graph-info` | 列出图中所有节点和端口（紧凑格式） |
+| POST | `/api/external/run` | 同步：推送图片、运行一帧、返回指定端口的输出 |
+| POST | `/api/external/submit` | 异步：排队运行，立即返回 task_id |
+| GET | `/api/external/result/{task_id}` | 轮询任务状态和结果 |
+| DELETE | `/api/external/result/{task_id}` | 删除任务（清理） |
+| GET | `/api/external/tasks` | 列出所有已知任务 |
+
+所有逻辑委托给 `HeadlessController`（来自 `headless_api.py`），因此 GUI 后端和无头后端的执行逻辑完全一致。
+
+---
+
+## 无头服务器模式
+
+`run_headless.py` 新增 `--server` 模式：在无 UI 的环境下启动**共享内存服务器**（非 HTTP/FastAPI），通过 `multiprocessing.shared_memory` 实现零拷贝图片传输。
+
+```bash
+# 加载已保存的图并以服务器模式运行
+python run_headless.py my_graph.json --server
+
+# 自定义 socket 路径
+python run_headless.py my_graph.json --server --address /tmp/my_custom.sock
+```
+
+启动后，外部 Python 进程用 `SharedMemoryClient` 连接：
+
+```python
+from multimodal_client import SharedMemoryClient
+import cv2
+
+client = SharedMemoryClient("/tmp/mne_headless.sock")
+print(client.ping())  # True
+
+image = cv2.imread("photo.jpg")
+result = client.run(
+    image_node_id="...",
+    image_array=image,  # 零拷贝传输
+    output_node_id="...",
+    output_port_name="image_out",
+)
+# result.output 是原始 numpy 数组
+```
+
+**与 GUI 后端的区别：**
+- GUI 后端用 HTTP + base64（方便，但有序列化开销）
+- 无头后端用共享内存（零拷贝，最高效，但仅限同机）
+
+**典型场景：** 生产环境部署时，将训练好的图保存为 JSON，在服务器上以 `--server` 模式运行，外部进程通过共享内存推送图片并取回结果，无需浏览器，零拷贝。
 
 ---
 

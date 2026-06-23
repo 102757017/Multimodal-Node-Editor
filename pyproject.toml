@@ -15,6 +15,7 @@ dependencies = [
     "onnx>=1.20.1",
     "openai>=2.26.0",
     "opencv-python>=4.11.0.86",
+    "paho-mqtt>=2.1.0",
     "pillow>=12.1.1",
     "platformdirs>=4.9.4",
     "pydantic>=2.12.5",

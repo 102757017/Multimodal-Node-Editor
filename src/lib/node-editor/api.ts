@@ -79,6 +79,17 @@ export const api = {
     jput<{ ok: boolean }>(`/api/graph/nodes/${nodeId}/properties`, { properties }),
   updateNodePosition: (nodeId: string, position: { x: number; y: number }) =>
     jput<{ ok: boolean }>(`/api/graph/nodes/${nodeId}/position`, { position }),
+  autoLayout: (opts?: {
+    direction?: "LR" | "TB";
+    node_width?: number;
+    node_height?: number;
+    layer_gap?: number;
+    node_gap?: number;
+  }) =>
+    jpost<{ ok: boolean; positions: Record<string, { x: number; y: number }> }>(
+      "/api/graph/auto-layout",
+      opts || {},
+    ),
   setTriggerMode: (nodeId: string, mode: "ALL" | "ANY") =>
     jput<{ ok: boolean }>(`/api/graph/nodes/${nodeId}/trigger-mode`, { mode }),
   setInputSource: (nodeId: string, port_name: string, source: string | null) =>
